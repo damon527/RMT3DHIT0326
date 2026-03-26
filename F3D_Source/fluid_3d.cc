@@ -1,4 +1,18 @@
 #include "fluid_3d.hh"
+#include <string>
+#include <cstring>
+
+namespace {
+inline int hit_owner_rank(const std::vector<int> &bounds, int procs, int gx, int gy, int gz) {
+    for(int r=0; r<procs; r++) {
+        const int ax = bounds[6*r+0], bx = bounds[6*r+1];
+        const int ay = bounds[6*r+2], by = bounds[6*r+3];
+        const int az = bounds[6*r+4], bz = bounds[6*r+5];
+        if(gx>=ax && gx<bx && gy>=ay && gy<by && gz>=az && gz<bz) return r;
+    }
+    return 0;
+}
+}
 
 /**
  * Constructor for fluid_3d class, representing incompressible
@@ -56,6 +70,15 @@ fluid_3d::fluid_3d(geometry *gm, sim_manager *mgmt_, sim_params *spars_) :
 	gx(new double[m]), gy(new double [n]), gz(new double[o]),
 	lx(new double[sm4]),ly(new double[sn4]),lz(new double[so4]),
     lx0(lx+2),ly0(ly+2),lz0(lz+2),out(NULL),
+    ppf(NULL), ppfe(NULL), ppe(NULL), ppfsv(NULL), eps_nu(NULL),
+    hit_e_low_bar(0), hit_alpha_last(1), hit_ramp_t0(0),
+    hit_phase_state(0), hit_freeze_steps(0),
+    hit_bootstrap_sum(0), hit_bootstrap_count(0), hit_last_e_low(0), hit_last_e_tot(0), hit_prev_e_tot(0),
+    hit_t_pack(0), hit_t_comm_g2s(0), hit_t_fft_fwd(0), hit_t_shell(0), hit_t_fft_bwd(0), hit_t_comm_s2g(0), hit_t_unpack(0),
+    hit_step(0), hit_rng(static_cast<unsigned int>(spars_->hit_init_seed)),
+    hit_fftw_mpi_ready(false), hit_alloc_local(0), hit_local_n0(0), hit_local_0_start(0),
+    hit_ux(NULL), hit_uy(NULL), hit_uz(NULL),
+    hit_px_f(NULL), hit_py_f(NULL), hit_pz_f(NULL), hit_px_b(NULL), hit_py_b(NULL), hit_pz_b(NULL),
     watch("F3d", 5, "Extrapolation", "Pressure Poisson", "Communication", "Stresses", "MAC"),
 	expper(*gm, mgmt->weight_fac, spars),
 	osm(NULL),osn(NULL),oso(NULL),max_sizes(NULL),
@@ -72,6 +95,19 @@ fluid_3d::fluid_3d(geometry *gm, sim_manager *mgmt_, sim_params *spars_) :
 	setup_output_dimensions(); // gather dimensions on master processor needed for contour output
 	if(spars->display) display_stats();
 	set_omp(spars->omp_num_thr);
+	 for(int c=0;c<3;c++) {
+        force_acc[c] = new double[smn4*so4]();
+        gradp_acc[c] = new double[smn4*so4]();
+        part_acc[c] = new double[smn4*so4]();
+        elas_acc[c] = new double[smn4*so4]();
+        asv_acc[c] = new double[smn4*so4]();
+    }
+    ppf = new double[smn4*so4]();
+    ppfe = new double[smn4*so4]();
+    ppe = new double[smn4*so4]();
+    ppfsv = new double[smn4*so4]();
+    eps_nu = new double[smn4*so4]();
+    if(spars->hit_enable && spars->hit_use_fft) setup_hit_fftw_mpi();
 
     printf("#### I'm rank %d, my own box (%d %d %d) to (%d %d %d)\n", rank, ai, aj, ak, bi, bj, bk);
 }
@@ -82,6 +118,7 @@ fluid_3d::fluid_3d(geometry *gm, sim_manager *mgmt_, sim_params *spars_) :
 fluid_3d::~fluid_3d() {
 
 	if (trace) delete tr;
+	 cleanup_hit_fftw_mpi();
 	if (impl) cleanup_impl_visc();
 	if(godunov) cleanup_mac();
 	cleanup_fem();
@@ -99,6 +136,18 @@ fluid_3d::~fluid_3d() {
 	delete[] gx;
 	delete[] rm_mem;
 	delete[] u_mem;
+	 for(int c=0;c<3;c++) {
+        delete [] force_acc[c];
+        delete [] gradp_acc[c];
+        delete [] part_acc[c];
+        delete [] elas_acc[c];
+        delete [] asv_acc[c];
+    }
+    delete [] ppf;
+    delete [] ppfe;
+    delete [] ppe;
+    delete [] ppfsv;
+    delete [] eps_nu;
 #if defined(VAR_DEN)
     delete[] lrho;
 #endif
@@ -191,6 +240,9 @@ int fluid_3d::nface(int tag, int &ti, int &tj, int &tk){
 /** Initializes all fields and reset simulation time. */
 int fluid_3d::initialize() {
     int init_err=1;
+      if(spars->hit_enable && spars->chk_num>0) {
+        hit_freeze_steps = std::max(0, int(spars->hit_restart_freeze_time/std::max(spars->dt, small_number)));
+    }
     if(spars->chk_num>0) {
 	    init_err=initialize_from_chk_point(spars->chk_dirname);
     }
@@ -200,6 +252,14 @@ int fluid_3d::initialize() {
         spars->chk_num = 0;
         time=0;
         init_fluid();
+         if(spars->hit_enable) initialize_hit_field();
+        if(spars->hit_enable) hit_phase_state = (spars->hit_phase>0)?spars->hit_phase:1;
+        if(spars->hit_enable) {
+            hit_e_low_bar = spars->hit_e_low_bar_state;
+            hit_alpha_last = spars->hit_alpha_last_state;
+            hit_ramp_t0 = spars->hit_ramp_t0_state;
+            hit_freeze_steps = spars->hit_freeze_steps_state;
+        }
         init_pres();
         init_refmap();
         init_extrapolate(false);
@@ -210,6 +270,13 @@ int fluid_3d::initialize() {
         // NOTE: No need to communicate here
         // initialization of field values are communicated in individual function
         // initial extrapolation gets communicated after each layer is done
+    }
+    if(spars->hit_enable) {
+        if(hit_phase_state==0) hit_phase_state = (spars->hit_phase>0)?spars->hit_phase:1;
+        hit_e_low_bar = spars->hit_e_low_bar_state;
+        hit_alpha_last = spars->hit_alpha_last_state;
+        hit_ramp_t0 = spars->hit_ramp_t0_state;
+        hit_freeze_steps = (hit_freeze_steps>0)?hit_freeze_steps:spars->hit_freeze_steps_state;
     }
 
     fill_boundary_cc(0);
@@ -238,6 +305,10 @@ void fluid_3d::init_iter(int init_err){
     if(init_err>0) {
         double tol = 1e-4;
         int num_iter = spars->num_iters;
+        const int saved_hit_enable = spars->hit_enable;
+        // Keep pressure bootstrap iterations independent from HIT forcing.
+        // This avoids invoking the forcing controller before the state is fully settled.
+        spars->hit_enable = 0;
         if(rank==0) printf("# Doing %d initial iterations, or until div(u) < %e\n", num_iter, tol);
 		/*
 	puts("i\n");
@@ -269,6 +340,7 @@ void fluid_3d::init_iter(int init_err){
 #endif
             if(divu_l2<tol) break;
         }
+        spars->hit_enable = saved_hit_enable;
         nt=0;
 	time=0.0;
     }
@@ -558,6 +630,9 @@ int fluid_3d::step_forward(int debug){
     fill_boundary_cc(detail_v);
     // Also communicate dvel
     communicate<2048>();
+     apply_hit_forcing();
+    update_khm_fields();
+    write_hit_energy_diag();
 
 	// Mutigrid info pass into output string
 	if (out != NULL && rank == 0) {
@@ -1775,7 +1850,8 @@ int fluid_3d::collision_stress(int eid, double (&fluid_s)[3]){
 /** New routine to compute solid stress;
  * only on the lower faces. */
 template<lower_faces F>
-void fluid_3d::solid_stress(int eid, double (&solid_s)[3], double &sfrac){
+void fluid_3d::solid_stress(int eid, double (&solid_s)[3], double &sfrac,
+                            double *elastic_s, double *asv_s, double *active_s){
 	if(F>2) p_fatal_error("solid_stress: Unknown lower_faces, try again.\n", 1);
 
 	const int strides[3] ={1, sm4, smn4};
@@ -1957,20 +2033,31 @@ void fluid_3d::solid_stress(int eid, double (&solid_s)[3], double &sfrac){
 
         for(int nn=0;nn<3;nn++) sigma(nn,nn) -= sigma_avg;
 		double ex_mu = tmp_sm.ex_mu * tf *(1 + tmp_sm.ev_trans_mult * mgmt->tderiv_func_in(phiv));
-
-        // Multiply G to the strain tensor to get the stress tensor
+     // Multiply G to the strain tensor to get the stress tensor
         sigma.scale(G);
 
+
 		for(int nn=0;nn<3;nn++) {
-			solid_s[nn] += sigma(F,nn);
-			solid_s[nn] += ex_mu * facs[F] * (
+			 double e_term = sigma(F,nn);
+                         double sv_term = ex_mu * facs[F] * (
 					(fp->vel[nn] - fp[-strd].vel[nn])
 			+ ( (nn==F) ? (fp->vel[nn] - fp[-strd].vel[nn]) :
 			  (0.25*(fp[ strides[nn]].vel[F] + fp[ strides[nn]-strd].vel[F]
 				    -fp[-strides[nn]].vel[F] - fp[-strides[nn]-strd].vel[F])))
 			);
-
-			if (add_astress) solid_s[nn] += astress(F,nn);
+            double a_term = (add_astress?astress(F,nn):0.0);
+            double part_ramp = 1.0;
+            if(spars->hit_enable && hit_phase_state==3 && spars->hit_ramp_time>0) {
+                double tau = std::max(0.0,std::min(1.0,(time-hit_ramp_t0)/spars->hit_ramp_time));
+                part_ramp = 0.5*(1.0-cos(M_PI*tau));
+            }
+            e_term *= part_ramp;
+            sv_term *= part_ramp;
+            a_term *= part_ramp;
+			solid_s[nn] += e_term + sv_term + a_term;
+            if(elastic_s) elastic_s[nn] += e_term;
+            if(asv_s) asv_s[nn] += sv_term;
+            if(active_s) active_s[nn] += a_term;
 		}
 
 #if defined(DEBUG)
@@ -2301,6 +2388,549 @@ void fluid_3d::subtract_q_grad(double cdt){
             elem->fvel[2*f+1][f] -= up;
 		}
 	}
+}
+
+void fluid_3d::setup_hit_fftw_mpi() {
+    if(hit_fftw_mpi_ready) return;
+    fftw_mpi_init();
+    ptrdiff_t n0 = o, n1 = n, n2 = m;
+    hit_alloc_local = fftw_mpi_local_size_3d(n0, n1, n2, world, &hit_local_n0, &hit_local_0_start);
+    hit_ux = fftw_alloc_complex(hit_alloc_local);
+    hit_uy = fftw_alloc_complex(hit_alloc_local);
+    hit_uz = fftw_alloc_complex(hit_alloc_local);
+    hit_px_f = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_ux, hit_ux, world, FFTW_FORWARD, FFTW_ESTIMATE);
+    hit_py_f = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_uy, hit_uy, world, FFTW_FORWARD, FFTW_ESTIMATE);
+    hit_pz_f = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_uz, hit_uz, world, FFTW_FORWARD, FFTW_ESTIMATE);
+    hit_px_b = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_ux, hit_ux, world, FFTW_BACKWARD, FFTW_ESTIMATE);
+    hit_py_b = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_uy, hit_uy, world, FFTW_BACKWARD, FFTW_ESTIMATE);
+    hit_pz_b = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_uz, hit_uz, world, FFTW_BACKWARD, FFTW_ESTIMATE);
+
+    hit_slab_n0.resize(grid->procs,0);
+    hit_slab_start.resize(grid->procs,0);
+    int ln0 = (int)hit_local_n0, lstart = (int)hit_local_0_start;
+    MPI_Allgather(&ln0,1,MPI_INT,hit_slab_n0.data(),1,MPI_INT,world);
+    MPI_Allgather(&lstart,1,MPI_INT,hit_slab_start.data(),1,MPI_INT,world);
+    int myb[6] = {ai,bi,aj,bj,ak,bk};
+    hit_rank_bounds.resize(6*grid->procs,0);
+    MPI_Allgather(myb,6,MPI_INT,hit_rank_bounds.data(),6,MPI_INT,world);
+
+    hit_z_to_slab_rank.assign(o, 0);
+    for(int r=0; r<grid->procs; r++) {
+        const int z0 = hit_slab_start[r], z1 = z0 + hit_slab_n0[r];
+        for(int gz=z0; gz<z1; gz++) hit_z_to_slab_rank[gz] = r;
+    }
+
+    const ptrdiff_t slab_plane = ptrdiff_t(n)*ptrdiff_t(m);
+    hit_local_to_slab.clear();
+    hit_local_to_slab.reserve(ptrdiff_t(sm)*ptrdiff_t(sn)*ptrdiff_t(so));
+    std::vector<int> send_recs_to_slab(grid->procs, 0);
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        const int eid = index(i,j,k);
+        const int gx = ai + i, gy = aj + j, gz = ak + k;
+        const int dest = hit_z_to_slab_rank[gz];
+        hit_local_to_slab_entry ent;
+        ent.dest = dest;
+        ent.eid = eid;
+        ent.slab_idx = ptrdiff_t(gz - hit_slab_start[dest]) * slab_plane + ptrdiff_t(gy)*m + gx;
+        hit_local_to_slab.push_back(ent);
+        send_recs_to_slab[dest]++;
+    }
+    hit_sc_to_slab.assign(grid->procs,0);
+    hit_rc_to_slab.assign(grid->procs,0);
+    hit_sd_to_slab.assign(grid->procs,0);
+    hit_rd_to_slab.assign(grid->procs,0);
+    for(int r=0; r<grid->procs; r++) hit_sc_to_slab[r] = send_recs_to_slab[r] * int(sizeof(hit_to_slab_msg));
+    MPI_Alltoall(hit_sc_to_slab.data(),1,MPI_INT,hit_rc_to_slab.data(),1,MPI_INT,world);
+    int sTot=0, rTot=0;
+    for(int r=0; r<grid->procs; r++) {
+        hit_sd_to_slab[r] = sTot; sTot += hit_sc_to_slab[r];
+        hit_rd_to_slab[r] = rTot; rTot += hit_rc_to_slab[r];
+    }
+    hit_sbuf_to_slab.assign(sTot/int(sizeof(hit_to_slab_msg)), hit_to_slab_msg());
+    hit_rbuf_to_slab.assign(rTot/int(sizeof(hit_to_slab_msg)), hit_to_slab_msg());
+
+    hit_slab_to_grid.clear();
+    hit_slab_to_grid.reserve(hit_alloc_local);
+    std::vector<int> send_recs_to_grid(grid->procs, 0);
+    for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int gy=0; gy<n; gy++) for(int gx=0; gx<m; gx++) {
+        const int gz = int(hit_local_0_start + lz);
+        const int dest = hit_owner_rank(hit_rank_bounds, grid->procs, gx, gy, gz);
+        hit_slab_to_grid_entry ent;
+        ent.dest = dest;
+        ent.slab_idx = lz*slab_plane + ptrdiff_t(gy)*m + gx;
+        ent.gx = gx; ent.gy = gy; ent.gz = gz;
+        hit_slab_to_grid.push_back(ent);
+        send_recs_to_grid[dest]++;
+    }
+    hit_sc_to_grid.assign(grid->procs,0);
+    hit_rc_to_grid.assign(grid->procs,0);
+    hit_sd_to_grid.assign(grid->procs,0);
+    hit_rd_to_grid.assign(grid->procs,0);
+    for(int r=0; r<grid->procs; r++) hit_sc_to_grid[r] = send_recs_to_grid[r] * int(sizeof(hit_to_grid_msg));
+    MPI_Alltoall(hit_sc_to_grid.data(),1,MPI_INT,hit_rc_to_grid.data(),1,MPI_INT,world);
+    sTot=0; rTot=0;
+    for(int r=0; r<grid->procs; r++) {
+        hit_sd_to_grid[r] = sTot; sTot += hit_sc_to_grid[r];
+        hit_rd_to_grid[r] = rTot; rTot += hit_rc_to_grid[r];
+    }
+    hit_sbuf_to_grid.assign(sTot/int(sizeof(hit_to_grid_msg)), hit_to_grid_msg());
+    hit_rbuf_to_grid.assign(rTot/int(sizeof(hit_to_grid_msg)), hit_to_grid_msg());
+    hit_fftw_mpi_ready = true;
+}
+
+void fluid_3d::cleanup_hit_fftw_mpi() {
+    if(!hit_fftw_mpi_ready) return;
+    if(hit_px_f) fftw_destroy_plan(hit_px_f);
+    if(hit_py_f) fftw_destroy_plan(hit_py_f);
+    if(hit_pz_f) fftw_destroy_plan(hit_pz_f);
+    if(hit_px_b) fftw_destroy_plan(hit_px_b);
+    if(hit_py_b) fftw_destroy_plan(hit_py_b);
+    if(hit_pz_b) fftw_destroy_plan(hit_pz_b);
+    if(hit_ux) fftw_free(hit_ux);
+    if(hit_uy) fftw_free(hit_uy);
+    if(hit_uz) fftw_free(hit_uz);
+    hit_ux = hit_uy = hit_uz = NULL;
+    hit_local_to_slab.clear();
+    hit_slab_to_grid.clear();
+    hit_sbuf_to_slab.clear(); hit_rbuf_to_slab.clear();
+    hit_sbuf_to_grid.clear(); hit_rbuf_to_grid.clear();
+    hit_fftw_mpi_ready = false;
+}
+
+void fluid_3d::initialize_hit_field() {
+    if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
+    const double twopi = 2.0*M_PI;
+    const double k0 = spars->hit_k0;
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        const int ind = index(i,j,k);
+        const double x = lx0[i], y = ly0[j], z = lz0[k];
+        double u = 0, v = 0, w = 0;
+        for(int a=1;a<=2;a++) for(int b=1;b<=2;b++) for(int c=1;c<=2;c++) {
+            const double kx = twopi*a/mgmt->lx, ky = twopi*b/mgmt->ly, kz = twopi*c/mgmt->lz;
+            const double kk = sqrt(kx*kx+ky*ky+kz*kz);
+            const double amp = pow(kk/k0,4.0)*exp(-2.0*pow(kk/k0,2.0));
+            const double ph = 0.37*(a+2*b+3*c);
+            const double s = sin(kx*x+ky*y+kz*z+ph);
+            u += amp*( ky*s);
+            v += amp*(-kx*s);
+            w += amp*(0.5*(kx-ky)*s);
+        }
+        u0[ind].vel[0] = u;
+        u0[ind].vel[1] = v;
+        u0[ind].vel[2] = w;
+    }
+    double loc2 = 0;
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        const int ind = index(i,j,k);
+        loc2 += u0[ind].vel[0]*u0[ind].vel[0] + u0[ind].vel[1]*u0[ind].vel[1] + u0[ind].vel[2]*u0[ind].vel[2];
+    }
+    double g2 = 0;
+    MPI_Allreduce(&loc2,&g2,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    const double urms = sqrt(g2/(3.0*m*n*o));
+    const double scl = (urms>small_number)?(spars->hit_target_urms/urms):1.0;
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        int ind = index(i,j,k);
+        for(int c=0;c<3;c++) u0[ind].vel[c] *= scl;
+    }
+    communicate<1>();
+}
+
+void fluid_3d::apply_hit_forcing() {
+    hit_t_pack = hit_t_comm_g2s = hit_t_fft_fwd = hit_t_shell = 0.0;
+    hit_t_fft_bwd = hit_t_comm_s2g = hit_t_unpack = 0.0;
+    if(spars->hit_use_fft) apply_hit_forcing_spectral_shell();
+    else apply_hit_forcing_legacy_trig();
+}
+
+void fluid_3d::apply_hit_forcing_legacy_trig() {
+    if(!spars->hit_enable) return;
+    if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
+    // NOTE (interim, architecture-preserving): this controller uses a finite set of
+    // divergence-free trigonometric modes (k^2 <= hit_kf2_max), not a full FFT shell controller.
+    // Consequently E_low is defined within this low-mode subspace and P_in is exact for the
+    // applied subspace forcing, but it is still an approximation of a true spectral-shell forcing.
+    hit_step++;
+    // Phase workflow:
+    // A=initializer already done in initialize(), B=single-phase bootstrap calibration,
+    // C=production run with fixed target by default.
+    if(hit_phase_state<=1) {
+        hit_phase_state = 2;
+        spars->hit_phase = 2;
+    }
+    if(hit_phase_state==2 && spars->hit_insert_step>0 && hit_step>=spars->hit_insert_step) {
+        hit_phase_state = 3;
+        spars->hit_phase = 3;
+        hit_ramp_t0 = time;
+    }
+    const double twopi = 2.0*M_PI;
+    double e_low_local = 0.0, e_tot_local = 0.0;
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        const int ind = index(i,j,k);
+        const double x = lx0[i], y = ly0[j], z = lz0[k];
+        double ulow[3] = {0,0,0};
+        for(int a=-2;a<=2;a++) for(int b=-2;b<=2;b++) for(int c=-2;c<=2;c++) {
+            if(a==0 && b==0 && c==0) continue;
+            if(a*a+b*b+c*c > spars->hit_kf2_max) continue;
+            const double kx = twopi*a/mgmt->lx, ky = twopi*b/mgmt->ly, kz = twopi*c/mgmt->lz;
+            const double ph = 0.17*(a+2*b+3*c+spars->hit_init_seed);
+            const double s = sin(kx*x+ky*y+kz*z+ph);
+            ulow[0] += ky*s; ulow[1] += -kx*s; ulow[2] += 0.5*(kx-ky)*s;
+        }
+        e_low_local += 0.5*(ulow[0]*ulow[0] + ulow[1]*ulow[1] + ulow[2]*ulow[2]);
+        e_tot_local += 0.5*(u0[ind].vel[0]*u0[ind].vel[0] + u0[ind].vel[1]*u0[ind].vel[1] + u0[ind].vel[2]*u0[ind].vel[2]);
+    }
+    double e_low=0,e_tot=0;
+    MPI_Allreduce(&e_low_local,&e_low,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&e_tot_local,&e_tot,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    // target source: 0 bootstrap(default), 1 manual, 2 recalibrate
+    if(spars->hit_target_source==1) {
+        // manual: keep configured target
+    } else if(hit_phase_state==2 && spars->hit_target_source==0) {
+        if(time>=spars->hit_bootstrap_start_time) {
+            hit_bootstrap_sum += e_low;
+            hit_bootstrap_count += 1.0;
+            spars->hit_e_low_target = hit_bootstrap_sum/std::max(1.0, hit_bootstrap_count);
+        }
+        if(spars->hit_bootstrap_steps>0 && hit_step>=spars->hit_bootstrap_steps) {
+            hit_phase_state = 3;
+            spars->hit_phase = 3;
+            hit_ramp_t0 = time;
+        }
+    } else if(spars->hit_target_source==2 || spars->hit_recalibrate_target) {
+        spars->hit_e_low_target = e_low;
+    }
+    if(spars->hit_e_low_target<=0) spars->hit_e_low_target = std::max(e_low, spars->hit_e_floor);
+    hit_e_low_bar = (1.0-spars->hit_beta)*hit_e_low_bar + spars->hit_beta*e_low;
+    const double alpha_t = sqrt(spars->hit_e_low_target/std::max(hit_e_low_bar,spars->hit_e_floor));
+    const double dal = std::max(-spars->hit_delta_alpha, std::min(spars->hit_delta_alpha, alpha_t-1.0));
+    const double alpha = 1.0 + dal;
+    double alpha_limited = alpha;
+    if(hit_freeze_steps>0) {
+        alpha_limited = 1.0;
+        hit_freeze_steps--;
+    }
+    double ramp = 1.0;
+    if(spars->hit_ramp_time>0) {
+        const double tau = std::max(0.0, std::min(1.0, (time-hit_ramp_t0)/spars->hit_ramp_time));
+        ramp = 0.5*(1.0-cos(M_PI*tau));
+    }
+    const double alpha_eff = 1.0 + ramp*(alpha_limited-1.0);
+    hit_alpha_last = alpha_eff;
+    spars->hit_e_low_bar_state = hit_e_low_bar;
+    spars->hit_alpha_last_state = hit_alpha_last;
+    spars->hit_ramp_t0_state = hit_ramp_t0;
+    spars->hit_freeze_steps_state = hit_freeze_steps;
+
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        const int ind = index(i,j,k);
+        const double x = lx0[i], y = ly0[j], z = lz0[k];
+        double ulow[3] = {0,0,0};
+        for(int a=-2;a<=2;a++) for(int b=-2;b<=2;b++) for(int c=-2;c<=2;c++) {
+            if(a==0 && b==0 && c==0) continue;
+            if(a*a+b*b+c*c > spars->hit_kf2_max) continue;
+            const double kx = twopi*a/mgmt->lx, ky = twopi*b/mgmt->ly, kz = twopi*c/mgmt->lz;
+            const double ph = 0.17*(a+2*b+3*c+spars->hit_init_seed);
+            const double s = sin(kx*x+ky*y+kz*z+ph);
+            ulow[0] += ky*s; ulow[1] += -kx*s; ulow[2] += 0.5*(kx-ky)*s;
+        }
+        for(int c=0;c<3;c++) {
+            const double du = (alpha_eff-1.0)*ulow[c];
+            u0[ind].vel[c] += du;
+            force_acc[c][G0+ind] = du/dt;
+        }
+    }
+    hit_last_e_low = e_low;
+    hit_last_e_tot = e_tot;
+    communicate<1>();
+}
+
+void fluid_3d::apply_hit_forcing_spectral_shell() {
+    if(!spars->hit_enable) return;
+    if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
+    if(!hit_fftw_mpi_ready) setup_hit_fftw_mpi();
+    // True distributed MPI-FFTW controller:
+    // local u0 -> distributed slab arrays (MPI exchange) -> fftw_mpi forward/backward -> local writeback.
+    hit_step++;
+    if(hit_phase_state<=1) { hit_phase_state=2; spars->hit_phase=2; }
+    if(hit_phase_state==2 && spars->hit_insert_step>0 && hit_step>=spars->hit_insert_step) {
+        hit_phase_state=3; spars->hit_phase=3; hit_ramp_t0=time;
+    }
+    const int N = m*n*o;
+    const double invN = 1.0/double(N);
+    const ptrdiff_t slab_plane = ptrdiff_t(n)*ptrdiff_t(m);
+  const int slab_msg_sz = int(sizeof(hit_to_slab_msg));
+const int grid_msg_sz = int(sizeof(hit_to_grid_msg));
+double t0 = MPI_Wtime();
+std::vector<int> rec_to_slab(grid->procs,0);
+hit_to_slab_msg *send_to_slab = hit_sbuf_to_slab.data();
+for(size_t q=0; q<hit_local_to_slab.size(); q++) {
+    const hit_local_to_slab_entry &e = hit_local_to_slab[q];
+    const int slot = rec_to_slab[e.dest]++;
+    hit_to_slab_msg &msg = send_to_slab[(hit_sd_to_slab[e.dest]/slab_msg_sz) + slot];
+    msg.idx = e.slab_idx;
+    msg.u = u0[e.eid].vel[0];
+    msg.v = u0[e.eid].vel[1];
+    msg.w = u0[e.eid].vel[2];
+}
+double t_pack_local = MPI_Wtime() - t0;
+t0 = MPI_Wtime();
+MPI_Alltoallv(static_cast<void*>(hit_sbuf_to_slab.data()), hit_sc_to_slab.data(), hit_sd_to_slab.data(), MPI_BYTE,
+              static_cast<void*>(hit_rbuf_to_slab.data()), hit_rc_to_slab.data(), hit_rd_to_slab.data(), MPI_BYTE, world);
+double t_comm_g2s_local = MPI_Wtime() - t0;
+
+t0 = MPI_Wtime();
+for(ptrdiff_t q=0;q<hit_alloc_local;q++) {
+    hit_ux[q][0]=hit_ux[q][1]=0.0;
+    hit_uy[q][0]=hit_uy[q][1]=0.0;
+    hit_uz[q][0]=hit_uz[q][1]=0.0;
+}
+for(int r=0;r<grid->procs;r++) {
+    int nrec = hit_rc_to_slab[r]/slab_msg_sz;
+    hit_to_slab_msg *arr = hit_rbuf_to_slab.data() + (hit_rd_to_slab[r]/slab_msg_sz);
+    for(int a=0;a<nrec;a++) {
+            ptrdiff_t id = arr[a].idx;
+            hit_ux[id][0] = arr[a].u;
+            hit_uy[id][0] = arr[a].v;
+            hit_uz[id][0] = arr[a].w;
+        }
+    }
+    t0 = MPI_Wtime();
+    fftw_execute(hit_px_f); fftw_execute(hit_py_f); fftw_execute(hit_pz_f);
+    double t_fft_fwd_local = MPI_Wtime() - t0;
+
+    t0 = MPI_Wtime();
+    double e_low_local = 0.0, e_tot_local = 0.0, e_low = 0.0, e_tot = 0.0;
+    for(ptrdiff_t q=0;q<hit_alloc_local;q++) {
+        double u0x = hit_ux[q][0], u0y = hit_uy[q][0], u0z = hit_uz[q][0];
+        e_tot_local += 0.5*(u0x*u0x+u0y*u0y+u0z*u0z);
+    }
+    // Shell extraction on locally owned spectral coefficients.
+    for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
+        ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+        int kz = int(hit_local_0_start + lz);
+        int nx = (kx<=m/2)?kx:kx-m;
+        int ny = (ky<=n/2)?ky:ky-n;
+        int nz = (kz<=o/2)?kz:kz-o;
+        int k2i = nx*nx + ny*ny + nz*nz;
+        if(k2i==0) {
+            hit_ux[idx][0]=hit_ux[idx][1]=0.0;
+            hit_uy[idx][0]=hit_uy[idx][1]=0.0;
+            hit_uz[idx][0]=hit_uz[idx][1]=0.0;
+            continue;
+        }
+        if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
+        double kxv = 2.0*M_PI*nx/mgmt->lx, kyv = 2.0*M_PI*ny/mgmt->ly, kzv = 2.0*M_PI*nz/mgmt->lz;
+        double k2 = kxv*kxv + kyv*kyv + kzv*kzv;
+        double ur=hit_ux[idx][0], ui=hit_ux[idx][1];
+        double vr=hit_uy[idx][0], vi=hit_uy[idx][1];
+        double wr=hit_uz[idx][0], wi=hit_uz[idx][1];
+        // Option B: explicit divergence-free projection of modified shell mode basis.
+        double kdotr = kxv*ur + kyv*vr + kzv*wr;
+        double kdoti = kxv*ui + kyv*vi + kzv*wi;
+        ur -= kxv*kdotr/k2; ui -= kxv*kdoti/k2;
+        vr -= kyv*kdotr/k2; vi -= kyv*kdoti/k2;
+        wr -= kzv*kdotr/k2; wi -= kzv*kdoti/k2;
+        hit_ux[idx][0]=ur; hit_ux[idx][1]=ui;
+        hit_uy[idx][0]=vr; hit_uy[idx][1]=vi;
+        hit_uz[idx][0]=wr; hit_uz[idx][1]=wi;
+        e_low_local += 0.5*((ur*ur+ui*ui+vr*vr+vi*vi+wr*wr+wi*wi)*invN*invN);
+    }
+    MPI_Allreduce(&e_low_local,&e_low,1,MPI_DOUBLE,MPI_SUM,world);
+    MPI_Allreduce(&e_tot_local,&e_tot,1,MPI_DOUBLE,MPI_SUM,world);
+
+    if(spars->hit_target_source==1) {
+    } else if(hit_phase_state==2 && spars->hit_target_source==0) {
+        if(time>=spars->hit_bootstrap_start_time) {
+            hit_bootstrap_sum += e_low; hit_bootstrap_count += 1.0;
+            spars->hit_e_low_target = hit_bootstrap_sum/std::max(1.0, hit_bootstrap_count);
+        }
+        if(spars->hit_bootstrap_steps>0 && hit_step>=spars->hit_bootstrap_steps) {
+            hit_phase_state=3; spars->hit_phase=3; hit_ramp_t0=time;
+        }
+    } else if(spars->hit_target_source==2 || spars->hit_recalibrate_target) {
+        spars->hit_e_low_target = e_low;
+    }
+    if(spars->hit_e_low_target<=0) spars->hit_e_low_target = std::max(e_low,spars->hit_e_floor);
+    hit_e_low_bar = (1.0-spars->hit_beta)*hit_e_low_bar + spars->hit_beta*e_low;
+    double alpha_t = std::sqrt(spars->hit_e_low_target/std::max(hit_e_low_bar,spars->hit_e_floor));
+    double dal = std::max(-spars->hit_delta_alpha, std::min(spars->hit_delta_alpha, alpha_t-1.0));
+    double alpha = 1.0 + dal;
+    if(hit_freeze_steps>0) { alpha = 1.0; hit_freeze_steps--; }
+    double ramp=1.0;
+    if(spars->hit_ramp_time>0) {
+        double tau = std::max(0.0,std::min(1.0,(time-hit_ramp_t0)/spars->hit_ramp_time));
+        ramp = 0.5*(1.0-cos(M_PI*tau));
+    }
+    double alpha_eff = 1.0 + ramp*(alpha-1.0);
+    hit_alpha_last = alpha_eff;
+    spars->hit_e_low_bar_state = hit_e_low_bar;
+    spars->hit_alpha_last_state = hit_alpha_last;
+    spars->hit_ramp_t0_state = hit_ramp_t0;
+    spars->hit_freeze_steps_state = hit_freeze_steps;
+
+    // Shell-only correction (scale selected shell modes).
+    for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
+        ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+        int kz = int(hit_local_0_start + lz);
+        int nx = (kx<=m/2)?kx:kx-m;
+        int ny = (ky<=n/2)?ky:ky-n;
+        int nz = (kz<=o/2)?kz:kz-o;
+        int k2i = nx*nx + ny*ny + nz*nz;
+        if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
+        hit_ux[idx][0] *= alpha_eff; hit_ux[idx][1] *= alpha_eff;
+        hit_uy[idx][0] *= alpha_eff; hit_uy[idx][1] *= alpha_eff;
+        hit_uz[idx][0] *= alpha_eff; hit_uz[idx][1] *= alpha_eff;
+    }
+    double t_shell_local = MPI_Wtime() - t0;
+    t0 = MPI_Wtime();
+    fftw_execute(hit_px_b); fftw_execute(hit_py_b); fftw_execute(hit_pz_b);
+    double t_fft_bwd_local = MPI_Wtime() - t0;
+
+    t0 = MPI_Wtime();
+    std::vector<int> rec_to_grid(grid->procs,0);
+    hit_to_grid_msg *send_to_grid = hit_sbuf_to_grid.data();
+for(size_t q=0; q<hit_slab_to_grid.size(); q++) {
+    const hit_slab_to_grid_entry &e = hit_slab_to_grid[q];
+    const int slot = rec_to_grid[e.dest]++;
+    hit_to_grid_msg &msg = send_to_grid[(hit_sd_to_grid[e.dest]/grid_msg_sz) + slot];
+    msg.gx = e.gx; msg.gy = e.gy; msg.gz = e.gz;
+    msg.u = hit_ux[e.slab_idx][0]*invN;
+    msg.v = hit_uy[e.slab_idx][0]*invN;
+    msg.w = hit_uz[e.slab_idx][0]*invN;
+}
+t0 = MPI_Wtime();
+MPI_Alltoallv(static_cast<void*>(hit_sbuf_to_grid.data()), hit_sc_to_grid.data(), hit_sd_to_grid.data(), MPI_BYTE,
+              static_cast<void*>(hit_rbuf_to_grid.data()), hit_rc_to_grid.data(), hit_rd_to_grid.data(), MPI_BYTE, world);
+double t_comm_s2g_local = MPI_Wtime() - t0;
+t0 = MPI_Wtime();
+for(int r=0;r<grid->procs;r++) {
+    int nrec = hit_rc_to_grid[r]/grid_msg_sz;
+    hit_to_grid_msg *arr = hit_rbuf_to_grid.data() + (hit_rd_to_grid[r]/grid_msg_sz);
+    for(int a=0;a<nrec;a++) {
+            int i = arr[a].gx - ai, j = arr[a].gy - aj, k = arr[a].gz - ak;
+            if(i<0||i>=sm||j<0||j>=sn||k<0||k>=so) continue;
+            int eid = index(i,j,k), ind = G0+eid;
+            double old0=u0[eid].vel[0], old1=u0[eid].vel[1], old2=u0[eid].vel[2];
+            u0[eid].vel[0]=arr[a].u; u0[eid].vel[1]=arr[a].v; u0[eid].vel[2]=arr[a].w;
+            force_acc[0][ind]=(arr[a].u-old0)/dt;
+            force_acc[1][ind]=(arr[a].v-old1)/dt;
+            force_acc[2][ind]=(arr[a].w-old2)/dt;
+        }
+    }
+    double t_unpack_local = MPI_Wtime() - t0;
+    double tvals_local[7] = {t_pack_local, t_comm_g2s_local, t_fft_fwd_local, t_shell_local, t_fft_bwd_local, t_comm_s2g_local, t_unpack_local};
+    double tvals_max[7] = {0,0,0,0,0,0,0};
+    MPI_Allreduce(tvals_local, tvals_max, 7, MPI_DOUBLE, MPI_MAX, world);
+    hit_t_pack = tvals_max[0];
+    hit_t_comm_g2s = tvals_max[1];
+    hit_t_fft_fwd = tvals_max[2];
+    hit_t_shell = tvals_max[3];
+    hit_t_fft_bwd = tvals_max[4];
+    hit_t_comm_s2g = tvals_max[5];
+    hit_t_unpack = tvals_max[6];
+    hit_last_e_low = e_low;
+    hit_last_e_tot = e_tot;
+    communicate<1>();
+}
+
+void fluid_3d::write_hit_energy_diag() {
+    if(!spars->hit_enable) return;
+    // t step dt Etotal Elow Ehigh Elow_bar urms varx vary varz alpha Pin eps Pp Pel Pasv dKdt R
+    // t_pack t_comm_g2s t_fft_fwd t_shell t_fft_bwd t_comm_s2g t_unpack
+    const double volN = double(m*n*o);
+    double ux2=0,uy2=0,uz2=0,pin=0,pp=0,ppe_g=0,ppsv=0,epsg=0;
+    double local_ux2=0,local_uy2=0,local_uz2=0,local_pin=0,local_pp=0,local_ppe=0,local_ppsv=0,local_eps=0;
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        int ind = G0 + index(i,j,k);
+        field &f = u_mem[ind];
+        local_ux2 += f.vel[0]*f.vel[0];
+        local_uy2 += f.vel[1]*f.vel[1];
+        local_uz2 += f.vel[2]*f.vel[2];
+        local_pin += f.vel[0]*force_acc[0][ind] + f.vel[1]*force_acc[1][ind] + f.vel[2]*force_acc[2][ind];
+        local_pp += ppf[ind];
+        local_ppe += ppfe[ind];
+        local_ppsv += ppfsv[ind];
+        local_eps += eps_nu[ind];
+    }
+    MPI_Allreduce(&local_ux2,&ux2,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&local_uy2,&uy2,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&local_uz2,&uz2,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&local_pin,&pin,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&local_pp,&pp,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&local_ppe,&ppe_g,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&local_ppsv,&ppsv,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    MPI_Allreduce(&local_eps,&epsg,1,MPI_DOUBLE,MPI_SUM,grid->cart);
+    const double varx = ux2/volN, vary=uy2/volN, varz=uz2/volN;
+    const double urms = sqrt((varx+vary+varz)/3.0);
+    const double ehigh = std::max(0.0, hit_last_e_tot-hit_last_e_low);
+    const double dKdt_fd = (hit_last_e_tot - hit_prev_e_tot)/std::max(dt,small_number);
+    const double r_energy = dKdt_fd - (pin - epsg + pp);
+    if(rank!=0) {
+        hit_prev_e_tot = hit_last_e_tot;
+        return;
+    }
+    FILE *fh = p_safe_fopen((std::string(spars->dirname)+"/hit_energy.dat").c_str(), nt==1?"w":"a");
+    fprintf(fh, "%g %d %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g\n",
+            time, nt, dt, hit_last_e_tot, hit_last_e_low, ehigh, hit_e_low_bar,
+            urms, varx, vary, varz, hit_alpha_last, pin/volN, epsg/volN, pp/volN,
+            ppe_g/volN, ppsv/volN, dKdt_fd, r_energy,
+            hit_t_pack, hit_t_comm_g2s, hit_t_fft_fwd, hit_t_shell, hit_t_fft_bwd, hit_t_comm_s2g, hit_t_unpack);
+    fclose(fh);
+    hit_prev_e_tot = hit_last_e_tot;
+}
+
+void fluid_3d::update_khm_fields() {
+    auto face_split = [&](int eid, int F, double (&ff)[3], double (&fe)[3], double (&fsv)[3], double (&fa)[3]) {
+        for(int c=0;c<3;c++) { ff[c]=0; fe[c]=0; fsv[c]=0; fa[c]=0; }
+        double sfrac = 0.0, solid_tot[3]={0,0,0}, elas[3]={0,0,0}, addv[3]={0,0,0}, act[3]={0,0,0}, coll[3]={0,0,0};
+        if(F==0) {
+            fluid_stress<LEFT>(eid, ff);
+            solid_stress<LEFT>(eid, solid_tot, sfrac, elas, addv, act);
+            collision_stress<LEFT>(eid, coll);
+        } else if(F==1) {
+            fluid_stress<FRONT>(eid, ff);
+            solid_stress<FRONT>(eid, solid_tot, sfrac, elas, addv, act);
+            collision_stress<FRONT>(eid, coll);
+        } else {
+            fluid_stress<DOWN>(eid, ff);
+            solid_stress<DOWN>(eid, solid_tot, sfrac, elas, addv, act);
+            collision_stress<DOWN>(eid, coll);
+        }
+        for(int c=0;c<3;c++) {
+            fe[c] = elas[c] + act[c];
+            fsv[c] = addv[c] + coll[c];
+            fa[c] = solid_tot[c] + coll[c];
+        }
+    };
+    const int sx=1, sy=sm4, sz=smn4;
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        int eid = index(i,j,k);
+        int ind = G0 + eid;
+        field *fp = u0 + eid;
+        double gp[3] = {0,0,0};
+        neg_pres_grad(fp, gp);
+        for(int c=0;c<3;c++) gradp_acc[c][ind] = gp[c]/mgmt->fm.rho;
+        double ffm[3][3], fem[3][3], fsvm[3][3], fpm[3][3];
+        double ffp[3][3], fep[3][3], fsvp[3][3], fpp[3][3];
+        face_split(eid,0,ffm[0],fem[0],fsvm[0],fpm[0]);
+        face_split(eid,1,ffm[1],fem[1],fsvm[1],fpm[1]);
+        face_split(eid,2,ffm[2],fem[2],fsvm[2],fpm[2]);
+        face_split(eid+sx,0,ffp[0],fep[0],fsvp[0],fpp[0]);
+        face_split(eid+sy,1,ffp[1],fep[1],fsvp[1],fpp[1]);
+        face_split(eid+sz,2,ffp[2],fep[2],fsvp[2],fpp[2]);
+        for(int c=0;c<3;c++) {
+            elas_acc[c][ind] = dxsp*(fep[0][c]-fem[0][c]) + dysp*(fep[1][c]-fem[1][c]) + dzsp*(fep[2][c]-fem[2][c]);
+            asv_acc[c][ind]  = dxsp*(fsvp[0][c]-fsvm[0][c]) + dysp*(fsvp[1][c]-fsvm[1][c]) + dzsp*(fsvp[2][c]-fsvm[2][c]);
+            part_acc[c][ind] = dxsp*(fpp[0][c]-fpm[0][c]) + dysp*(fpp[1][c]-fpm[1][c]) + dzsp*(fpp[2][c]-fpm[2][c]);
+        }
+        ppf[ind] = fp->vel[0]*part_acc[0][ind] + fp->vel[1]*part_acc[1][ind] + fp->vel[2]*part_acc[2][ind];
+        ppfe[ind] = fp->vel[0]*elas_acc[0][ind] + fp->vel[1]*elas_acc[1][ind] + fp->vel[2]*elas_acc[2][ind];
+        ppe[ind] = ppfe[ind];
+        ppfsv[ind] = fp->vel[0]*asv_acc[0][ind] + fp->vel[1]*asv_acc[1][ind] + fp->vel[2]*asv_acc[2][ind];
+        eps_nu[ind] = mgmt->fm.mu * (
+            fp->sigma[0][0]*fp->sigma[0][0] + fp->sigma[1][1]*fp->sigma[1][1] + fp->sigma[2][2]*fp->sigma[2][2]
+        );
+    }
 }
 
 /**

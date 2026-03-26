@@ -284,7 +284,7 @@ stepper::stepper(sim_params &spars,p_class &pr) :
 	wparams.clear();
 	if(dump_code&4) {
         for (int i = 0; i < write_params::numf; i++) {
-            if ((1<<i) & spars.out_flag) {
+            if ((1ULL<<i) & spars.out_flag) {
                 add_output(spars.output_dim,spars.output_ind,i,spars.obj_body,spars.data_fmt);
             }
         }

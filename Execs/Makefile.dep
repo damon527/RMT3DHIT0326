@@ -1,0 +1,127 @@
+fluid_3d.o: ../F3D_Source/fluid_3d.cc ../F3D_Source/fluid_3d.hh \
+ ../Utilities/defs.hh ../Utilities/mat3.hh ../Utilities/custom_structs.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/common.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ ../Utilities/stencil.hh ../Utilities/mg_probs.hh ../Utilities/timer.hh \
+ /home/hhq/codes_ios/PGMG/multigrid.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/region.hh \
+ ../F3D_Source/fields.hh ../Utilities/matlib.hh ../Sim/sim_manager.hh \
+ ../Sim/object.hh ../Sim/sim_params.hh ../Utilities/comm_info.hh \
+ ../Utilities/timer.hh ../Utilities/tracers.hh ../F3D_Source/fields.hh \
+ ../Sim/sim_params.hh ../F3D_Source/fluid_3d.hh \
+ ../Extrapolation/extrap_mmap.hh ../Extrapolation/extrap_helper.hh \
+ ../IO/write_params.hh
+fluid_3d_chk_pt.o: ../F3D_Source/fluid_3d_chk_pt.cc \
+ ../F3D_Source/fluid_3d.hh ../Utilities/defs.hh ../Utilities/mat3.hh \
+ ../Utilities/custom_structs.hh /home/hhq/codes_ios/PGMG/geometry.hh \
+ /home/hhq/codes_ios/PGMG/common.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/buffer.hh ../Utilities/stencil.hh \
+ ../Utilities/mg_probs.hh ../Utilities/timer.hh \
+ /home/hhq/codes_ios/PGMG/multigrid.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/region.hh \
+ ../F3D_Source/fields.hh ../Utilities/matlib.hh ../Sim/sim_manager.hh \
+ ../Sim/object.hh ../Sim/sim_params.hh ../Utilities/comm_info.hh \
+ ../Utilities/timer.hh ../Utilities/tracers.hh ../F3D_Source/fields.hh \
+ ../Sim/sim_params.hh ../F3D_Source/fluid_3d.hh \
+ ../Extrapolation/extrap_mmap.hh ../Extrapolation/extrap_helper.hh \
+ ../IO/write_params.hh
+fluid_3d_comm.o: ../F3D_Source/fluid_3d_comm.cc ../F3D_Source/fluid_3d.hh \
+ ../Utilities/defs.hh ../Utilities/mat3.hh ../Utilities/custom_structs.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/common.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ ../Utilities/stencil.hh ../Utilities/mg_probs.hh ../Utilities/timer.hh \
+ /home/hhq/codes_ios/PGMG/multigrid.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/region.hh \
+ ../F3D_Source/fields.hh ../Utilities/matlib.hh ../Sim/sim_manager.hh \
+ ../Sim/object.hh ../Sim/sim_params.hh ../Utilities/comm_info.hh \
+ ../Utilities/timer.hh ../Utilities/tracers.hh ../F3D_Source/fields.hh \
+ ../Sim/sim_params.hh ../F3D_Source/fluid_3d.hh \
+ ../Extrapolation/extrap_mmap.hh ../Extrapolation/extrap_helper.hh \
+ ../IO/write_params.hh
+fluid_3d_ex.o: ../F3D_Source/fluid_3d_ex.cc ../F3D_Source/fluid_3d.hh \
+ ../Utilities/defs.hh ../Utilities/mat3.hh ../Utilities/custom_structs.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/common.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ ../Utilities/stencil.hh ../Utilities/mg_probs.hh ../Utilities/timer.hh \
+ /home/hhq/codes_ios/PGMG/multigrid.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/region.hh \
+ ../F3D_Source/fields.hh ../Utilities/matlib.hh ../Sim/sim_manager.hh \
+ ../Sim/object.hh ../Sim/sim_params.hh ../Utilities/comm_info.hh \
+ ../Utilities/timer.hh ../Utilities/tracers.hh ../F3D_Source/fields.hh \
+ ../Sim/sim_params.hh ../F3D_Source/fluid_3d.hh \
+ ../Extrapolation/extrap_mmap.hh ../Extrapolation/extrap_helper.hh \
+ ../IO/write_params.hh
+fluid_3d_io.o: ../F3D_Source/fluid_3d_io.cc ../F3D_Source/fluid_3d.hh \
+ ../Utilities/defs.hh ../Utilities/mat3.hh ../Utilities/custom_structs.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/common.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ ../Utilities/stencil.hh ../Utilities/mg_probs.hh ../Utilities/timer.hh \
+ /home/hhq/codes_ios/PGMG/multigrid.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/region.hh \
+ ../F3D_Source/fields.hh ../Utilities/matlib.hh ../Sim/sim_manager.hh \
+ ../Sim/object.hh ../Sim/sim_params.hh ../Utilities/comm_info.hh \
+ ../Utilities/timer.hh ../Utilities/tracers.hh ../F3D_Source/fields.hh \
+ ../Sim/sim_params.hh ../F3D_Source/fluid_3d.hh \
+ ../Extrapolation/extrap_mmap.hh ../Extrapolation/extrap_helper.hh \
+ ../IO/write_params.hh
+fluid_3d_utils.o: ../F3D_Source/fluid_3d_utils.cc \
+ ../F3D_Source/fluid_3d.hh ../Utilities/defs.hh ../Utilities/mat3.hh \
+ ../Utilities/custom_structs.hh /home/hhq/codes_ios/PGMG/geometry.hh \
+ /home/hhq/codes_ios/PGMG/common.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/buffer.hh ../Utilities/stencil.hh \
+ ../Utilities/mg_probs.hh ../Utilities/timer.hh \
+ /home/hhq/codes_ios/PGMG/multigrid.hh /home/hhq/codes_ios/PGMG/buffer.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/region.hh \
+ ../F3D_Source/fields.hh ../Utilities/matlib.hh ../Sim/sim_manager.hh \
+ ../Sim/object.hh ../Sim/sim_params.hh ../Utilities/comm_info.hh \
+ ../Utilities/timer.hh ../Utilities/tracers.hh ../F3D_Source/fields.hh \
+ ../Sim/sim_params.hh ../F3D_Source/fluid_3d.hh \
+ ../Extrapolation/extrap_mmap.hh ../Extrapolation/extrap_helper.hh \
+ ../IO/write_params.hh
+extrap_helper.o: ../Extrapolation/extrap_helper.cc \
+ ../Extrapolation/extrap_helper.hh /home/hhq/codes_ios/PGMG/geometry.hh \
+ /home/hhq/codes_ios/PGMG/common.hh ../Utilities/comm_info.hh \
+ /home/hhq/codes_ios/PGMG/buffer.hh ../Utilities/mat3.hh \
+ ../Utilities/timer.hh ../Sim/sim_params.hh ../Utilities/defs.hh \
+ /home/hhq/codes_ios/PGMG/common.hh
+extrap_mmap.o: ../Extrapolation/extrap_mmap.cc \
+ ../Extrapolation/extrap_mmap.hh ../Utilities/defs.hh \
+ ../F3D_Source/fields.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh ../Utilities/stencil.hh \
+ ../Utilities/matlib.hh ../Sim/sim_manager.hh ../Sim/object.hh \
+ ../Sim/sim_params.hh
+bin_mesh.o: ../IO/bin_mesh.cc ../IO/bin_mesh.hh
+write_params.o: ../IO/write_params.cc ../IO/write_params.hh
+object.o: ../Sim/object.cc ../Sim/object.hh ../Utilities/defs.hh \
+ ../Sim/sim_params.hh /home/hhq/codes_ios/PGMG/common.hh \
+ ../Utilities/matlib.hh
+sim_manager.o: ../Sim/sim_manager.cc ../Sim/sim_manager.hh \
+ ../Utilities/defs.hh /home/hhq/codes_ios/PGMG/geometry.hh \
+ /home/hhq/codes_ios/PGMG/common.hh ../Sim/object.hh ../Sim/sim_params.hh \
+ /home/hhq/codes_ios/PGMG/common.hh ../Utilities/matlib.hh
+sim_params.o: ../Sim/sim_params.cc ../Sim/sim_params.hh \
+ ../Utilities/defs.hh /home/hhq/codes_ios/PGMG/common.hh
+stepper.o: ../Sim/stepper.cc ../Sim/stepper.hh ../F3D_Source/fields.hh \
+ ../Utilities/defs.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh ../Utilities/stencil.hh \
+ ../Utilities/matlib.hh ../Sim/sim_manager.hh ../Sim/object.hh \
+ ../Sim/sim_params.hh ../Utilities/custom_structs.hh \
+ ../IO/write_params.hh ../Sim/sim_params.hh
+mat3.o: ../Utilities/mat3.cc ../Utilities/mat3.hh
+mg_probs.o: ../Utilities/mg_probs.cc ../Utilities/mg_probs.hh \
+ ../Utilities/timer.hh /home/hhq/codes_ios/PGMG/multigrid.hh \
+ /home/hhq/codes_ios/PGMG/buffer.hh /home/hhq/codes_ios/PGMG/common.hh \
+ /home/hhq/codes_ios/PGMG/geometry.hh /home/hhq/codes_ios/PGMG/region.hh \
+ /home/hhq/codes_ios/PGMG/common.hh
+stencil.o: ../Utilities/stencil.cc ../Utilities/stencil.hh
+tracers.o: ../Utilities/tracers.cc ../Utilities/tracers.hh \
+ /home/hhq/codes_ios/PGMG/common.hh /home/hhq/codes_ios/PGMG/geometry.hh \
+ ../F3D_Source/fields.hh ../Utilities/defs.hh ../Utilities/stencil.hh \
+ ../Utilities/matlib.hh ../Sim/sim_manager.hh ../Sim/object.hh \
+ ../Sim/sim_params.hh ../Sim/sim_params.hh ../F3D_Source/fluid_3d.hh \
+ ../Utilities/mat3.hh ../Utilities/custom_structs.hh \
+ /home/hhq/codes_ios/PGMG/buffer.hh ../Utilities/mg_probs.hh \
+ ../Utilities/timer.hh /home/hhq/codes_ios/PGMG/multigrid.hh \
+ ../F3D_Source/fields.hh ../Utilities/comm_info.hh ../Utilities/timer.hh \
+ ../Utilities/tracers.hh ../Extrapolation/extrap_mmap.hh \
+ ../Extrapolation/extrap_helper.hh ../IO/write_params.hh

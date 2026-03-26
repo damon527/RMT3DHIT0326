@@ -15,7 +15,7 @@ sim_params::sim_params(const char *fn):
     chk_step(0), chk_num(0), frames(100), stop_short(-1),
     chkpt_freq(1), omp_num_thr(1),
     debug_flag(0), debug_obj_id(-1),
-    obj_body(-1), data_fmt(0), out_flag(1|2|4|128),
+    obj_body(-1), data_fmt(0), out_flag(1ULL|2ULL|4ULL|128ULL),
     output_dim(2), output_ind(-1), dump_code(1|2),
     ntracers(1000), num_iters(5),
     dt(1.), T(1.), cur_time(0),
@@ -33,6 +33,14 @@ sim_params::sim_params(const char *fn):
     ex_visc_mult(1.), ev_trans_mult(1.), sdt_pad(0.25),
     dt_ex_pad(0.8), weight_fac(0.25),
     gravity(0),
+    hit_enable(0), hit_phase(0), hit_kf2_max(2), hit_kf2_min(1), hit_use_fft(1), hit_init_seed(12345), hit_init_only(0),
+    hit_bootstrap_steps(0), hit_insert_step(0), hit_recalibrate_target(0),
+    hit_target_source(0),
+    khm_enable(0), khm_out_stride(100), khm_pairs_per_sample(4096), khm_seed(24680),
+    hit_target_urms(1.0), hit_k0(4.0), hit_beta(0.05), hit_delta_alpha(0.005),
+    hit_e_floor(1e-12), hit_e_low_target(0.0), hit_ramp_time(0.5), hit_restart_freeze_time(0.1),
+    hit_bootstrap_start_time(0.0), hit_e_low_bar_state(0.0), hit_alpha_last_state(1.0),
+    hit_ramp_t0_state(0.0), hit_freeze_steps_state(0),
     bct{{0,0,0,0,0,0},{0,0,0,0,0,0},{0,0,0,0,0,0}},bcv{{0,0,0,0,0,0},{0,0,0,0,0,0},{0,0,0,0,0,0}},
     object_list(NULL),
     srho(NULL), shear_mod(NULL),
@@ -134,7 +142,8 @@ sim_params::sim_params(const char *fn):
         } else if(se(bp, "debug_obj_id")){
             debug_obj_id = final_int(ln);
         } else if(se(bp, "out_flag")){
-            out_flag = final_int(ln);
+            out_flag = static_cast<unsigned long long>(atoll(next_token(ln)));
+            check_no_more(ln);
         } else if(se(bp, "obj_body")){
             obj_body = final_int(ln);
         } else if(se(bp, "data_fmt")){
@@ -212,6 +221,67 @@ sim_params::sim_params(const char *fn):
             weight_fac = final_double(ln);
         } else if(se(bp, "gravity")){
             gravity = final_double(ln);
+            } else if(se(bp, "hit_enable")){
+            hit_enable = final_int(ln);
+        } else if(se(bp, "hit_phase")){
+            hit_phase = final_int(ln);
+        } else if(se(bp, "hit_kf2_max")){
+            hit_kf2_max = final_int(ln);
+        } else if(se(bp, "hit_kf2_min")){
+            hit_kf2_min = final_int(ln);
+        } else if(se(bp, "hit_use_fft")){
+            hit_use_fft = final_int(ln);
+        } else if(se(bp, "hit_init_seed")){
+            hit_init_seed = final_int(ln);
+        } else if(se(bp, "hit_init_only")){
+            hit_init_only = final_int(ln);
+        } else if(se(bp, "hit_bootstrap_steps")){
+            hit_bootstrap_steps = final_int(ln);
+        } else if(se(bp, "hit_insert_step")){
+            hit_insert_step = final_int(ln);
+        } else if(se(bp, "hit_recalibrate_target")){
+            hit_recalibrate_target = final_int(ln);
+        } else if(se(bp, "hit_target_source")){
+            char *src = next_token(ln);
+            if(strcmp(src, "single_phase_bootstrap")==0) hit_target_source = 0;
+            else if(strcmp(src, "manual")==0) hit_target_source = 1;
+            else if(strcmp(src, "recalibrate")==0) hit_target_source = 2;
+            else hit_target_source = atoi(src);
+            check_no_more(ln);
+        } else if(se(bp, "hit_target_urms")){
+            hit_target_urms = final_double(ln);
+        } else if(se(bp, "hit_k0")){
+            hit_k0 = final_double(ln);
+        } else if(se(bp, "hit_beta")){
+            hit_beta = final_double(ln);
+        } else if(se(bp, "hit_delta_alpha")){
+            hit_delta_alpha = final_double(ln);
+        } else if(se(bp, "hit_e_floor")){
+            hit_e_floor = final_double(ln);
+        } else if(se(bp, "hit_e_low_target")){
+            hit_e_low_target = final_double(ln);
+        } else if(se(bp, "hit_ramp_time")){
+            hit_ramp_time = final_double(ln);
+        } else if(se(bp, "hit_restart_freeze_time")){
+            hit_restart_freeze_time = final_double(ln);
+        } else if(se(bp, "hit_bootstrap_start_time")){
+            hit_bootstrap_start_time = final_double(ln);
+        } else if(se(bp, "hit_e_low_bar_state")){
+            hit_e_low_bar_state = final_double(ln);
+        } else if(se(bp, "hit_alpha_last_state")){
+            hit_alpha_last_state = final_double(ln);
+        } else if(se(bp, "hit_ramp_t0_state")){
+            hit_ramp_t0_state = final_double(ln);
+        } else if(se(bp, "hit_freeze_steps_state")){
+            hit_freeze_steps_state = final_int(ln);
+        } else if(se(bp, "khm_enable")){
+            khm_enable = final_int(ln);
+        } else if(se(bp, "khm_out_stride")){
+            khm_out_stride = final_int(ln);
+        } else if(se(bp, "khm_pairs_per_sample")){
+            khm_pairs_per_sample = final_int(ln);
+        } else if(se(bp, "khm_seed")){
+            khm_seed = final_int(ln);
         } else if(se(bp, "bc_xl")){
             int tmp_type[3]={0,0,0};
             double tmp_value[3]={0,0,0};
@@ -459,7 +529,7 @@ void sim_params::print_params(){
            "            debug_obj_id              (-1)                     int\n"
            "            obj_body                  (-1)                     int\n"
            "            data_fmt                  (0)                      int\n"
-           "            out_flag                  (135)                    int\n"
+           "            out_flag                  (135)                    uint64\n"
            "            output_dim                0/1/2(2)                 int\n"
            "            output_ind                (48)                     int\n"
            "            dump_code                 (3)                      unsigned int\n"
@@ -513,7 +583,7 @@ void sim_params::write_params(const char * chk_dirname){
                     "debug_obj_id              %d#(-1)                   int\n"
                     "obj_body                  %d#(-1)                  int\n"
                     "data_fmt                  %d#(0)                   int\n"
-                    "out_flag                  %d#(135)                 int\n"
+                    "out_flag                  %llu#(135)               uint64\n"
                     "output_dim                %d#0/1/2(2)              int\n"
                     "output_ind                %d#(48)                  int\n"
                     "dump_code                 %u#(3)                   unsigned int\n"
@@ -549,6 +619,42 @@ void sim_params::write_params(const char * chk_dirname){
                     sim_type, fmu, fdt_pad,
                     n_obj, nlayers, wt_n, ex_visc_mult,
                     ev_trans_mult, sdt_pad, dt_ex_pad, gravity);
+                    fprintf(fh,
+                    "# HIT / KHM CONTROLS\n"
+                    "hit_enable                %d\n"
+                    "hit_phase                 %d\n"
+                    "hit_use_fft               %d\n"
+                    "hit_kf2_max               %d\n"
+                    "hit_kf2_min               %d\n"
+                    "hit_init_seed             %d\n"
+                    "hit_init_only             %d\n"
+                    "hit_bootstrap_steps       %d\n"
+                    "hit_insert_step           %d\n"
+                    "hit_recalibrate_target    %d\n"
+                    "hit_target_source         %d\n"
+                    "hit_target_urms           %g\n"
+                    "hit_k0                    %g\n"
+                    "hit_beta                  %g\n"
+                    "hit_delta_alpha           %g\n"
+                    "hit_e_floor               %g\n"
+                    "hit_e_low_target          %g\n"
+                    "hit_ramp_time             %g\n"
+                    "hit_restart_freeze_time   %g\n"
+                    "hit_bootstrap_start_time  %g\n"
+                    "hit_e_low_bar_state       %g\n"
+                    "hit_alpha_last_state      %g\n"
+                    "hit_ramp_t0_state         %g\n"
+                    "hit_freeze_steps_state    %d\n"
+                    "khm_enable                %d\n"
+                    "khm_out_stride            %d\n"
+                    "khm_pairs_per_sample      %d\n"
+                    "khm_seed                  %d\n",
+                    hit_enable, hit_phase, hit_use_fft, hit_kf2_max, hit_kf2_min, hit_init_seed, hit_init_only,
+                    hit_bootstrap_steps, hit_insert_step, hit_recalibrate_target, hit_target_source,
+                    hit_target_urms, hit_k0, hit_beta, hit_delta_alpha, hit_e_floor, hit_e_low_target,
+                    hit_ramp_time, hit_restart_freeze_time, hit_bootstrap_start_time,
+                    hit_e_low_bar_state, hit_alpha_last_state, hit_ramp_t0_state, hit_freeze_steps_state,
+                    khm_enable, khm_out_stride, khm_pairs_per_sample, khm_seed);
                     fprintf(fh, "# SOLIDS CONFIGURATIONS\n");
                     if(object_list!=NULL){
                         for(int i=0;i<n_obj;i++){

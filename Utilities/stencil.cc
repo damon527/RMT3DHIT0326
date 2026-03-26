@@ -28,7 +28,7 @@ void stencil::construct_coeff_arrays() {
 	// backward stencils are determined by forward
 	// (just a sign flip for odd derivatives plus
 	// left-right reversal)
-	double b[n_derivs][n_orders][n_coeffs];
+	double b[n_derivs][n_orders][n_coeffs] = {{{0}}};
 	for (int i = 0; i < n_derivs; i++)
 		for (int j = 0; j < n_orders; j++)
 			for (int k = 0; k < j + 2 + i; k++)
