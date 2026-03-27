@@ -68,6 +68,21 @@ class sim_params{
 	int ntracers;
     // number of initial iterations
     int num_iters;
+     // HIT module controls
+    bool hit_enable;
+    bool hit_keep_forcing_after_insert;
+    bool hit_project_modified_modes;
+    bool hit_project_all_modes;
+    bool hit_write_spectrum;
+    bool hit_write_energy;
+    int hit_init_type; // 0: random phase, 1: restart
+    int hit_apply_stride;
+    int hit_diag_stride;
+    int hit_spectrum_stride;
+    int hit_seed;
+    int hit_warmup_steps;
+    int hit_insert_step;
+    int hit_insert_ramp_steps;
 	double dt, T;
 	double cur_time;
 	double ax,ay,az,bx,by,bz;
@@ -99,6 +114,10 @@ class sim_params{
 	double ex_visc_mult, ev_trans_mult, sdt_pad, dt_ex_pad;
     double weight_fac;
 	double gravity;
+	double hit_kf2;
+    double hit_kd;
+    double hit_target_re_lambda;
+    char * hit_restart_file;
 	/** boundary condition types */
     int bct[3][6];
     double bcv[3][6];
@@ -128,6 +147,7 @@ class sim_params{
 	~sim_params(){
 		if (chk_dirname!=NULL) delete [] chk_dirname;
 		if (recover_dirname!=NULL) delete [] recover_dirname;
+		if (hit_restart_file!=NULL) delete [] hit_restart_file;
 		if (sim_type!=NULL) delete [] sim_type;
 		if (extra_specs!=NULL) delete [] extra_specs;
 		if (basic_specs!=NULL) delete [] basic_specs;

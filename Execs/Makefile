@@ -21,6 +21,7 @@ iflags = $(foreach subdir,$(source_dirs), -I./$(subdir))
 iflags+=-I$(PGMG_DIR) `gsl-config --cflags`
 # Add these directory to library path
 lflags+=-L. -L$(PGMG_DIR) -lpgmg `gsl-config --libs`
+lflags+=$(extra_lflags)
 # add C++-11 std to clfags
 
 ########################################

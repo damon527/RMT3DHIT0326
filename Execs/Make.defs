@@ -3,4 +3,4 @@
 DEBUG   = FALSE
 VAR_DEN = FALSE
 TANG    = FALSE
-PGMG_DIR =
+PGMG_DIR = /home/hhq/codes_ios/PGMG

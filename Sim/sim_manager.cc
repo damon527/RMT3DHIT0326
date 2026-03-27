@@ -12,6 +12,8 @@ sim_manager::~sim_manager() {
     if (avg_y != NULL) delete[] avg_y;
     if (avg_z != NULL) delete[] avg_z;
     if (avg_N != NULL) delete[] avg_N;
+    if (base_srho != NULL) delete[] base_srho;
+    if (base_shear_mod != NULL) delete[] base_shear_mod;
 	if (objs != NULL) delete[] objs;
     if(sm_array!=NULL) delete [] sm_array;
 }
@@ -68,6 +70,8 @@ void sim_manager::obligatory_cfl_recheck(){
 void sim_manager::create_objs(){
     for(int i=0;i<n_obj;i++){
         sm_array[i] = sl_mat(spars, i);
+        base_srho[i] = sm_array[i].rho;
+        base_shear_mod[i] = sm_array[i].G;
         // HACK HACK HACK:
         sm_array[i].ex_mu = sm_array[i].ex_visc_mult*fm.mu;
 
@@ -77,6 +81,23 @@ void sim_manager::create_objs(){
         int obj_type_index = spars->object_list[i];
 
         objs [i] = object::alloc(obj_type_index, basics, extras);
+    }
+    set_insertion_eta(insertion_eta);
+}
+
+void sim_manager::set_insertion_eta(double eta){
+    if(eta < 0.0) eta = 0.0;
+    if(eta > 1.0) eta = 1.0;
+    insertion_eta = eta;
+    particles_inserted = (eta > 0.0);
+    for(int i=0;i<n_obj;i++){
+        const double rho_target = base_srho[i];
+        const double g_target = base_shear_mod[i];
+        sm_array[i].rho = 1.0 + eta*(rho_target - 1.0);
+        sm_array[i].invrho = 1.0/sm_array[i].rho;
+        sm_array[i].G = eta*g_target;
+        sm_array[i].c = (sm_array[i].G>0.0)?sqrt(sm_array[i].G/sm_array[i].rho):0.0;
+        sm_array[i].ex_mu = eta*sm_array[i].ex_visc_mult*fm.mu;
     }
 }
 

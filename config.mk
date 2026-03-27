@@ -8,6 +8,4 @@ mpicxx=mpicxx -Wno-long-long
 
 # LAPACK flags for dense linear algebra
 lp_lflags=-llapack -lblas
-
-# Extra link flags for app-specific dependencies (e.g. FFTW-MPI)
 extra_lflags=-lfftw3_mpi -lfftw3 -lm

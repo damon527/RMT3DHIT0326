@@ -28,6 +28,7 @@
 #include "write_params.hh"
 #include "sim_params.hh"
 #include "sim_manager.hh"
+#include "hit_module.hh"
 
 using namespace F3D_CONST;
 using namespace FIELD_CONST;
@@ -186,7 +187,8 @@ class fluid_3d {
 	/** A timer object to keep track of old and new extrapolation routine time usage */
 	timer watch;
 	extrap_helper<3> expper;
-
+        hit_module *hit;
+        
 	// ##### class functions #####
 
 	/** Constructors and destructor*/
@@ -271,6 +273,14 @@ class fluid_3d {
 	int initialize();
 	void init_iter(int init_err);
     int initialize_from_chk_point(const char * chk_dirname);
+    void setup_hit_module();
+    void hit_initialize_random_phase();
+    void hit_initialize_from_restart();
+    void apply_hit_forcing_spectral_shell(int step);
+    void write_hit_diagnostics(int step);
+    void begin_particle_insertion(int step);
+    void update_particle_insertion_ramp(int step);
+    void post_step_operations(int step);
     void init_from_slice(write_params wp, double * g_val);
 	void init_fluid();
 	void init_pres();

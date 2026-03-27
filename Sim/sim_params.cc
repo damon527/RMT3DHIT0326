@@ -18,6 +18,12 @@ sim_params::sim_params(const char *fn):
     obj_body(-1), data_fmt(0), out_flag(1|2|4|128),
     output_dim(2), output_ind(-1), dump_code(1|2),
     ntracers(1000), num_iters(5),
+     hit_enable(false), hit_keep_forcing_after_insert(true),
+    hit_project_modified_modes(true), hit_project_all_modes(false),
+    hit_write_spectrum(true), hit_write_energy(true),
+    hit_init_type(0), hit_apply_stride(1), hit_diag_stride(10),
+    hit_spectrum_stride(100), hit_seed(12345), hit_warmup_steps(0),
+    hit_insert_step(-1), hit_insert_ramp_steps(0),
     dt(1.), T(1.), cur_time(0),
     ax(0), ay(0), az(0), bx(1),
     by(1), bz(1), lx(bx-ax), ly(by-ay), lz(bz-az),
@@ -33,6 +39,7 @@ sim_params::sim_params(const char *fn):
     ex_visc_mult(1.), ev_trans_mult(1.), sdt_pad(0.25),
     dt_ex_pad(0.8), weight_fac(0.25),
     gravity(0),
+    hit_kf2(3.0), hit_kd(50.0), hit_target_re_lambda(84.0),
     bct{{0,0,0,0,0,0},{0,0,0,0,0,0},{0,0,0,0,0,0}},bcv{{0,0,0,0,0,0},{0,0,0,0,0,0},{0,0,0,0,0,0}},
     object_list(NULL),
     srho(NULL), shear_mod(NULL),
@@ -42,8 +49,10 @@ sim_params::sim_params(const char *fn):
 
     MPI_Comm_rank(world, &rank);
     sim_type = new char[256];
+    hit_restart_file = new char[256];
     recover_dirname = new char[256];
     sprintf(sim_type, "%s", "ftest");
+    sprintf(hit_restart_file, "%s", "");
     int i, ln=1, len = strlen(fn);
     char buf[buf_size], *bp;
     if(len<4 || fn[len-4]!='.' || fn[len-3]!='c' || fn[len-2]!='f' || fn[len-1]!='g'){
@@ -151,6 +160,47 @@ sim_params::sim_params(const char *fn):
             ntracers = final_int(ln);
         } else if(se(bp, "num_iters")){
             num_iters = final_int(ln);
+        } else if(se(bp, "hit_enable")){
+            hit_enable = final_int(ln);
+        } else if(se(bp, "hit_init_type")){
+            const char *tok = next_token(ln);
+            if(se(tok, "random_phase")) hit_init_type = 0;
+            else if(se(tok, "restart")) hit_init_type = 1;
+            else hit_init_type = atoi(tok);
+            check_no_more(ln);
+        } else if(se(bp, "hit_kf2")){
+            hit_kf2 = final_double(ln);
+        } else if(se(bp, "hit_kd")){
+            hit_kd = final_double(ln);
+        } else if(se(bp, "hit_target_re_lambda")){
+            hit_target_re_lambda = final_double(ln);
+        } else if(se(bp, "hit_apply_stride")){
+            hit_apply_stride = final_int(ln);
+        } else if(se(bp, "hit_diag_stride")){
+            hit_diag_stride = final_int(ln);
+        } else if(se(bp, "hit_spectrum_stride")){
+            hit_spectrum_stride = final_int(ln);
+        } else if(se(bp, "hit_seed")){
+            hit_seed = final_int(ln);
+        } else if(se(bp, "hit_warmup_steps")){
+            hit_warmup_steps = final_int(ln);
+        } else if(se(bp, "hit_insert_step")){
+            hit_insert_step = final_int(ln);
+        } else if(se(bp, "hit_insert_ramp_steps")){
+            hit_insert_ramp_steps = final_int(ln);
+        } else if(se(bp, "hit_keep_forcing_after_insert")){
+            hit_keep_forcing_after_insert = final_int(ln);
+        } else if(se(bp, "hit_restart_file")){
+            sprintf(hit_restart_file, "%s", next_token(ln));
+            check_no_more(ln);
+        } else if(se(bp, "hit_project_modified_modes")){
+            hit_project_modified_modes = final_int(ln);
+        } else if(se(bp, "hit_project_all_modes")){
+            hit_project_all_modes = final_int(ln);
+        } else if(se(bp, "hit_write_spectrum")){
+            hit_write_spectrum = final_int(ln);
+        } else if(se(bp, "hit_write_energy")){
+            hit_write_energy = final_int(ln);
         } else if(se(bp, "dt")){
             dt = final_double(ln);
         } else if(se(bp, "T")){
@@ -407,6 +457,32 @@ sim_params::sim_params(const char *fn):
     }
     if(var_den && rank==0) printf("sim_params:: warning, solid density is different from fluid density, but multigrid solves do not use variable density formulation.\n");
 #endif
+ if(hit_enable){
+        if(sys_size[2] <= 1){
+            fatal_error("sim_params: HIT requires 3D grid with nz > 1\n", 1);
+        }
+        if(!(x_prd && y_prd && z_prd)){
+            fatal_error("sim_params: HIT requires triply periodic boundaries (x_prd=y_prd=z_prd=1)\n", 1);
+        }
+        if(hit_apply_stride <= 0) hit_apply_stride = 1;
+        if(hit_diag_stride <= 0) hit_diag_stride = hit_apply_stride;
+        if(hit_spectrum_stride <= 0) hit_spectrum_stride = hit_diag_stride;
+        if(hit_insert_step >= 0 && hit_warmup_steps > 0 && hit_insert_step <= hit_warmup_steps){
+            fatal_error("sim_params: hit_insert_step must be greater than hit_warmup_steps\n", 1);
+        }
+        if(hit_init_type == 1){
+            int exist = 1;
+            if(rank==0){
+                FILE *fh = fopen(hit_restart_file, "rb");
+                if(fh==NULL){
+                    fprintf(stderr, "sim_params: hit_restart_file %s does not exist or is not readable\n", hit_restart_file);
+                    exist = 0;
+                } else fclose(fh);
+            }
+            MPI_Bcast(&exist, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            if(!exist) fatal_error("sim_params: invalid hit_restart_file\n", 1);
+        }
+    }
 }
 
 /** Finds the next token in a string, and if none is availble, gives an error
@@ -464,6 +540,24 @@ void sim_params::print_params(){
            "            output_ind                (48)                     int\n"
            "            dump_code                 (3)                      unsigned int\n"
            "            ntracers                  (1000)                   int\n"
+            "            hit_enable                0/1(0)                   bool\n"
+           "            hit_init_type             random_phase/restart     string\n"
+           "            hit_kf2                   (3.0)                    double\n"
+           "            hit_kd                    (50.0)                   double\n"
+           "            hit_target_re_lambda      (84.0)                   double\n"
+           "            hit_apply_stride          (1)                      int\n"
+           "            hit_diag_stride           (10)                     int\n"
+           "            hit_spectrum_stride       (100)                    int\n"
+           "            hit_seed                  (12345)                  int\n"
+           "            hit_warmup_steps          (0)                      int\n"
+           "            hit_insert_step           (-1)                     int\n"
+           "            hit_insert_ramp_steps     (0)                      int\n"
+           "            hit_keep_forcing_after_insert (1)                 bool\n"
+           "            hit_restart_file          (\"\")                   string\n"
+           "            hit_project_modified_modes (1)                    bool\n"
+           "            hit_project_all_modes      (0)                    bool\n"
+           "            hit_write_spectrum         (1)                    bool\n"
+           "            hit_write_energy           (1)                    bool\n"
            "            dt                        (1.)                     double\n"
            "            T                         (1.)                     double\n"
            "            current_time              (0.)                     double\n"
@@ -519,6 +613,24 @@ void sim_params::write_params(const char * chk_dirname){
                     "dump_code                 %u#(3)                   unsigned int\n"
                     "ntracers                  %d#(1000)                int\n"
                     "num_iters                 %d#(5)                   int\n"
+                    "hit_enable                %d#(0)                   bool\n"
+                    "hit_init_type             %d#(0=random,1=restart)  int\n"
+                    "hit_kf2                   %g#(3.0)                 double\n"
+                    "hit_kd                    %g#(50.0)                double\n"
+                    "hit_target_re_lambda      %g#(84.0)                double\n"
+                    "hit_apply_stride          %d#(1)                   int\n"
+                    "hit_diag_stride           %d#(10)                  int\n"
+                    "hit_spectrum_stride       %d#(100)                 int\n"
+                    "hit_seed                  %d#(12345)               int\n"
+                    "hit_warmup_steps          %d#(0)                   int\n"
+                    "hit_insert_step           %d#(-1)                  int\n"
+                    "hit_insert_ramp_steps     %d#(0)                   int\n"
+                    "hit_keep_forcing_after_insert %d#(1)               bool\n"
+                    "hit_restart_file          %s#(\"\")                string\n"
+                    "hit_project_modified_modes %d#(1)                  bool\n"
+                    "hit_project_all_modes      %d#(0)                  bool\n"
+                    "hit_write_spectrum         %d#(1)                  bool\n"
+                    "hit_write_energy           %d#(1)                  bool\n"
                     "dt                        %g#(1.)                  double\n"
                     "T                         %g#(1.)                  double\n"
                     "current_time              %g#(0.)                  double\n"
@@ -544,6 +656,12 @@ void sim_params::write_params(const char * chk_dirname){
                     chkpt_freq, omp_num_thr, debug_flag, debug_obj_id,
                     obj_body, data_fmt, out_flag, output_dim,
                     output_ind, dump_code, ntracers, num_iters,
+                    hit_enable, hit_init_type, hit_kf2, hit_kd, hit_target_re_lambda,
+                    hit_apply_stride, hit_diag_stride, hit_spectrum_stride, hit_seed,
+                    hit_warmup_steps, hit_insert_step, hit_insert_ramp_steps,
+                    hit_keep_forcing_after_insert, hit_restart_file,
+                    hit_project_modified_modes, hit_project_all_modes,
+                    hit_write_spectrum, hit_write_energy,
                     dt, T, cur_time,
                     ax,bx,ay,by,az,bz,
                     sim_type, fmu, fdt_pad,

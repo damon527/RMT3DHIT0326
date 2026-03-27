@@ -303,6 +303,7 @@ template<class p_class>
 int stepper::step(p_class &pr) {
 	curr_tot_step++;
 	int err = pr.step_forward(debug);
+	pr.post_step_operations(curr_tot_step);
 #if defined(DEBUG)
     run_diagnostics(pr);
 #endif

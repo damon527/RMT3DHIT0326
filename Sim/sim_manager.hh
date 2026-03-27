@@ -154,6 +154,10 @@ class sim_manager {
     double *avg_y;
     double *avg_z;
     double *avg_N;
+    double *base_srho;
+    double *base_shear_mod;
+    double insertion_eta;
+    bool particles_inserted;
 
 	/** fluid material constants */
 	fl_mat fm;
@@ -182,6 +186,10 @@ class sim_manager {
     avg_y(n_obj==0?NULL:new double[n_obj]),
     avg_z(n_obj==0?NULL:new double[n_obj]),
     avg_N(n_obj==0?NULL:new double[n_obj]),
+    base_srho(n_obj==0?NULL:new double[n_obj]),
+    base_shear_mod(n_obj==0?NULL:new double[n_obj]),
+    insertion_eta((spars->hit_insert_step>=0)?0.0:1.0),
+    particles_inserted(spars->hit_insert_step<0),
     fm(spars), sm_array(n_obj==0?NULL:new sl_mat[n_obj])
 	{
 		setup();
@@ -246,7 +254,8 @@ class sim_manager {
         }
     }
     void obligatory_cfl_recheck();
-
+    void set_insertion_eta(double eta);
+    
 	/** utility to get the mininum of 3 numbers */
 	inline double min3(double n1, double n2, double n3){
 		double smst = (n1<n2)?n1:n2;

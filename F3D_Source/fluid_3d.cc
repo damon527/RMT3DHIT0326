@@ -58,6 +58,7 @@ fluid_3d::fluid_3d(geometry *gm, sim_manager *mgmt_, sim_params *spars_) :
     lx0(lx+2),ly0(ly+2),lz0(lz+2),out(NULL),
     watch("F3d", 5, "Extrapolation", "Pressure Poisson", "Communication", "Stresses", "MAC"),
 	expper(*gm, mgmt->weight_fac, spars),
+	 hit(NULL),
 	osm(NULL),osn(NULL),oso(NULL),max_sizes(NULL),
 	cu_m(NULL),cu_n(NULL),cu_o(NULL) {
 
@@ -82,6 +83,7 @@ fluid_3d::fluid_3d(geometry *gm, sim_manager *mgmt_, sim_params *spars_) :
 fluid_3d::~fluid_3d() {
 
 	if (trace) delete tr;
+	if (hit) delete hit;
 	if (impl) cleanup_impl_visc();
 	if(godunov) cleanup_mac();
 	cleanup_fem();
@@ -217,6 +219,12 @@ int fluid_3d::initialize() {
     if((spars->dump_code & 1) && spars->ntracers>0){
         alloc_tracers();
     }
+     setup_hit_module();
+    if(spars->hit_enable){
+        if(spars->hit_init_type==1) hit_initialize_from_restart();
+        else hit_initialize_random_phase();
+    }
+
 
     // dt related constant tables
 	setup_stencils();          // stencil class
@@ -230,6 +238,42 @@ int fluid_3d::initialize() {
         setup_impl_visc();// implicit viscosity solver if applicable
     }
     return init_err;
+}
+void fluid_3d::setup_hit_module(){
+    if(!spars->hit_enable) return;
+    if(hit==NULL) hit = new hit_module(*this);
+    hit->setup_hit_module();
+}
+
+void fluid_3d::hit_initialize_random_phase(){
+    if(hit) hit->hit_initialize_random_phase();
+}
+
+void fluid_3d::hit_initialize_from_restart(){
+    if(hit) hit->hit_initialize_from_restart();
+}
+
+void fluid_3d::apply_hit_forcing_spectral_shell(int step){
+    if(hit) hit->apply_hit_forcing_spectral_shell(step);
+}
+
+void fluid_3d::write_hit_diagnostics(int step){
+    if(hit) hit->write_hit_diagnostics(step);
+}
+
+void fluid_3d::begin_particle_insertion(int step){
+    if(hit) hit->begin_particle_insertion(step);
+}
+
+void fluid_3d::update_particle_insertion_ramp(int step){
+    if(hit) hit->update_particle_insertion_ramp(step);
+}
+
+void fluid_3d::post_step_operations(int step){
+    apply_hit_forcing_spectral_shell(step);
+    begin_particle_insertion(step);
+    update_particle_insertion_ramp(step);
+    write_hit_diagnostics(step);
 }
 
 void fluid_3d::init_iter(int init_err){
