@@ -78,6 +78,7 @@ fluid_3d::fluid_3d(geometry *gm, sim_manager *mgmt_, sim_params *spars_) :
     hit_step(0), hit_rng(static_cast<unsigned int>(spars_->hit_init_seed)),
     hit_fftw_mpi_ready(false), hit_alloc_local(0), hit_local_n0(0), hit_local_0_start(0),
     hit_ux(NULL), hit_uy(NULL), hit_uz(NULL),
+    hit_fx_ou(NULL), hit_fy_ou(NULL), hit_fz_ou(NULL), hit_ou_initialized(false),
     hit_px_f(NULL), hit_py_f(NULL), hit_pz_f(NULL), hit_px_b(NULL), hit_py_b(NULL), hit_pz_b(NULL),
     hit_last_e_total_spec(0), hit_last_e_total_real(0), hit_last_e_unforced(0),
     hit_last_pin_hit(0), hit_last_pin_total(0), hit_last_tau_force(0), hit_last_delta_alpha_eff(0), hit_last_n_forced_modes(0),
@@ -525,6 +526,10 @@ int fluid_3d::step_forward(int debug){
 	// 9) update ref_map to already-computed t_{n+1}
 
 	nt++;
+	for(int kk=0; kk<so; kk++) for(int jj=0; jj<sn; jj++) for(int ii=0; ii<sm; ii++) {
+        int ind = G0 + index(ii,jj,kk);
+        force_acc[0][ind]=force_acc[1][ind]=force_acc[2][ind]=0.0;
+    }
     bool basic_v  = (debug<=-1 && rank==0) ;
     bool detail_v = (debug<=-2 && rank==0) ;
     //bool verbose_max = (debug==-3) ;
@@ -607,6 +612,9 @@ int fluid_3d::step_forward(int debug){
 
     compute_stress(detail_v);
 
+    if(spars->hit_enable && spars->hit_forcing_insertion==1) apply_hit_forcing(0.5);
+    else if(spars->hit_enable && spars->hit_forcing_insertion==2) apply_hit_forcing(1.0);
+
 	compute_ustar(dt, detail_v);
 
     // since ustar is computed, we need to reset interior and physical boundaries
@@ -635,7 +643,10 @@ int fluid_3d::step_forward(int debug){
     fill_boundary_cc(detail_v);
     // Also communicate dvel
     communicate<2048>();
-     apply_hit_forcing();
+     if(spars->hit_enable && spars->hit_forcing_insertion==1) apply_hit_forcing(0.5);
+    else if(spars->hit_enable && spars->hit_forcing_insertion==2) {
+        // rhs_source mode applies forcing only in the pre-ustar half step.
+    } else apply_hit_forcing(1.0);
     update_khm_fields();
     write_hit_energy_diag();
 
@@ -1404,6 +1415,10 @@ void fluid_3d::compute_ustar(const double cdt, bool verbose){
 				// also if implicit stress stencil is used, acc doesn't get doubled
                 bool gdn = false;
 				acceleration(eid,xx,yy,zz,acc,pres_update,gdn);
+				int ind = G0 + eid;
+                acc[0] += force_acc[0][ind];
+                acc[1] += force_acc[1][ind];
+                acc[2] += force_acc[2][ind];
 				// add all contributions to the extrapolation term F. See Yu (2003) Eqn 3.13
 
 				// compute prefactor
@@ -2403,6 +2418,9 @@ void fluid_3d::setup_hit_fftw_mpi() {
     hit_ux = fftw_alloc_complex(hit_alloc_local);
     hit_uy = fftw_alloc_complex(hit_alloc_local);
     hit_uz = fftw_alloc_complex(hit_alloc_local);
+   hit_fx_ou = fftw_alloc_complex(hit_alloc_local);
+    hit_fy_ou = fftw_alloc_complex(hit_alloc_local);
+    hit_fz_ou = fftw_alloc_complex(hit_alloc_local);
     hit_px_f = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_ux, hit_ux, world, FFTW_FORWARD, FFTW_ESTIMATE);
     hit_py_f = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_uy, hit_uy, world, FFTW_FORWARD, FFTW_ESTIMATE);
     hit_pz_f = fftw_mpi_plan_dft_3d(n0, n1, n2, hit_uz, hit_uz, world, FFTW_FORWARD, FFTW_ESTIMATE);
@@ -2494,7 +2512,12 @@ void fluid_3d::cleanup_hit_fftw_mpi() {
     if(hit_ux) fftw_free(hit_ux);
     if(hit_uy) fftw_free(hit_uy);
     if(hit_uz) fftw_free(hit_uz);
+     if(hit_fx_ou) fftw_free(hit_fx_ou);
+    if(hit_fy_ou) fftw_free(hit_fy_ou);
+    if(hit_fz_ou) fftw_free(hit_fz_ou);
     hit_ux = hit_uy = hit_uz = NULL;
+    hit_fx_ou = hit_fy_ou = hit_fz_ou = NULL;
+    hit_ou_initialized = false;
     hit_local_to_slab.clear();
     hit_slab_to_grid.clear();
     hit_sbuf_to_slab.clear(); hit_rbuf_to_slab.clear();
@@ -2502,7 +2525,7 @@ void fluid_3d::cleanup_hit_fftw_mpi() {
     hit_fftw_mpi_ready = false;
 }
 
-void fluid_3d::initialize_hit_field() {
+void fluid_3d::initialize_hit_field_deterministic() {
     if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
     const double twopi = 2.0*M_PI;
     const double k0 = spars->hit_k0;
@@ -2524,6 +2547,110 @@ void fluid_3d::initialize_hit_field() {
         u0[ind].vel[1] = v;
         u0[ind].vel[2] = w;
     }
+     communicate<1>();
+}
+
+void fluid_3d::initialize_hit_field_random_phase() {
+    if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
+    std::uniform_real_distribution<double> uni01(0.0, 1.0);
+    const double twopi = 2.0*M_PI;
+    const int k2min = std::max(1, int(std::floor(spars->hit_init_k2_min)));
+    const int k2max = std::max(k2min, int(std::floor(spars->hit_init_k2_max)));
+    const double k0 = std::max(spars->hit_k0, 1.0);
+    const int nmode = 128;
+    std::vector<int> kxv(nmode), kyv(nmode), kzv(nmode);
+    std::vector<double> ph(nmode), amp(nmode), ex(nmode), ey(nmode), ez(nmode);
+    for(int q=0;q<nmode;q++) {
+        int kx=1, ky=1, kz=1, k2=0;
+        while(k2<k2min || k2>k2max) {
+            kx = int(std::floor(uni01(hit_rng)*(2*int(std::sqrt(k2max))+1))) - int(std::sqrt(k2max));
+            ky = int(std::floor(uni01(hit_rng)*(2*int(std::sqrt(k2max))+1))) - int(std::sqrt(k2max));
+            kz = int(std::floor(uni01(hit_rng)*(2*int(std::sqrt(k2max))+1))) - int(std::sqrt(k2max));
+            if(kx==0 && ky==0 && kz==0) continue;
+            k2 = kx*kx + ky*ky + kz*kz;
+        }
+        const double km = std::sqrt(double(k2));
+        const double e0 = std::pow(km/k0,4.0)*std::exp(-2.0*std::pow(km/k0,2.0));
+        kxv[q]=kx; kyv[q]=ky; kzv[q]=kz;
+        ph[q] = twopi*uni01(hit_rng);
+        amp[q] = std::sqrt(std::max(e0, 1e-16));
+        // random unit vector then project perpendicular to k
+        double rx = 2.0*uni01(hit_rng)-1.0, ry = 2.0*uni01(hit_rng)-1.0, rz = 2.0*uni01(hit_rng)-1.0;
+        double kn = std::sqrt(double(kx*kx+ky*ky+kz*kz));
+        double kxn = kx/kn, kyn=ky/kn, kzn=kz/kn;
+        double dot = rx*kxn + ry*kyn + rz*kzn;
+        rx -= dot*kxn; ry -= dot*kyn; rz -= dot*kzn;
+        double rn = std::sqrt(rx*rx+ry*ry+rz*rz);
+        if(rn < 1e-12) { rx = -kyn; ry = kxn; rz = 0.0; rn = std::sqrt(rx*rx+ry*ry+rz*rz); }
+        ex[q]=rx/rn; ey[q]=ry/rn; ez[q]=rz/rn;
+    }
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        const int ind = index(i,j,k);
+        const double x = lx0[i], y = ly0[j], z = lz0[k];
+        double u=0,v=0,w=0;
+        for(int q=0;q<nmode;q++) {
+            const double arg = twopi*(kxv[q]*x/mgmt->lx + kyv[q]*y/mgmt->ly + kzv[q]*z/mgmt->lz) + ph[q];
+            const double s = std::sin(arg);
+            u += amp[q]*ex[q]*s;
+            v += amp[q]*ey[q]*s;
+            w += amp[q]*ez[q]*s;
+        }
+        u0[ind].vel[0]=u; u0[ind].vel[1]=v; u0[ind].vel[2]=w;
+    }
+    communicate<1>();
+}
+
+void fluid_3d::initialize_hit_field_full_spectrum_random_phase() {
+    if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
+    std::uniform_real_distribution<double> uni01(0.0, 1.0);
+    const double twopi = 2.0*M_PI;
+    const int k2min = std::max(1, int(std::floor(spars->hit_init_k2_min)));
+    const int k2max = std::max(k2min, int(std::floor(spars->hit_init_k2_max)));
+    const int kmax = int(std::ceil(std::sqrt(double(k2max))));
+    const double k0 = std::max(spars->hit_k0, 1.0);
+    struct mode_s { int kx,ky,kz; double amp, ph, ex,ey,ez; };
+    std::vector<mode_s> modes;
+    modes.reserve((2*kmax+1)*(2*kmax+1)*(2*kmax+1));
+    for(int kx=-kmax;kx<=kmax;kx++) for(int ky=-kmax;ky<=kmax;ky++) for(int kz=-kmax;kz<=kmax;kz++) {
+        if(kx==0 && ky==0 && kz==0) continue;
+        const int k2 = kx*kx + ky*ky + kz*kz;
+        if(k2<k2min || k2>k2max) continue;
+        const double km = std::sqrt(double(k2));
+        const double e0 = std::pow(km/k0,4.0)*std::exp(-2.0*std::pow(km/k0,2.0));
+        mode_s md;
+        md.kx=kx; md.ky=ky; md.kz=kz; md.amp=std::sqrt(std::max(e0,1e-16)); md.ph=twopi*uni01(hit_rng);
+        double rx = 2.0*uni01(hit_rng)-1.0, ry = 2.0*uni01(hit_rng)-1.0, rz = 2.0*uni01(hit_rng)-1.0;
+        const double kn = std::sqrt(double(kx*kx+ky*ky+kz*kz));
+        const double kxn = kx/kn, kyn=ky/kn, kzn=kz/kn;
+        const double dot = rx*kxn + ry*kyn + rz*kzn;
+        rx -= dot*kxn; ry -= dot*kyn; rz -= dot*kzn;
+        double rn = std::sqrt(rx*rx+ry*ry+rz*rz);
+        if(rn<1e-12) { rx=-kyn; ry=kxn; rz=0.0; rn = std::sqrt(rx*rx+ry*ry+rz*rz); }
+        md.ex=rx/rn; md.ey=ry/rn; md.ez=rz/rn;
+        modes.push_back(md);
+    }
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        const int ind = index(i,j,k);
+        const double x = lx0[i], y = ly0[j], z = lz0[k];
+        double u=0,v=0,w=0;
+        for(size_t q=0;q<modes.size();q++) {
+            const mode_s &md = modes[q];
+            const double arg = twopi*(md.kx*x/mgmt->lx + md.ky*y/mgmt->ly + md.kz*z/mgmt->lz) + md.ph;
+            const double s = std::sin(arg);
+            u += md.amp*md.ex*s;
+            v += md.amp*md.ey*s;
+            w += md.amp*md.ez*s;
+        }
+        u0[ind].vel[0]=u; u0[ind].vel[1]=v; u0[ind].vel[2]=w;
+    }
+    communicate<1>();
+}
+
+void fluid_3d::initialize_hit_field() {
+    if(spars->hit_init_mode==0) initialize_hit_field_deterministic();
+    else if(spars->hit_init_mode==1) initialize_hit_field_random_phase();
+    else initialize_hit_field_full_spectrum_random_phase();
+    // normalize to target urms
     double loc2 = 0;
     for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
         const int ind = index(i,j,k);
@@ -2531,7 +2658,7 @@ void fluid_3d::initialize_hit_field() {
     }
     double g2 = 0;
     MPI_Allreduce(&loc2,&g2,1,MPI_DOUBLE,MPI_SUM,grid->cart);
-    const double urms = sqrt(g2/(3.0*m*n*o));
+     const double urms = std::sqrt(g2/(3.0*m*n*o));
     const double scl = (urms>small_number)?(spars->hit_target_urms/urms):1.0;
     for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
         int ind = index(i,j,k);
@@ -2540,10 +2667,10 @@ void fluid_3d::initialize_hit_field() {
     communicate<1>();
 }
 
-void fluid_3d::apply_hit_forcing() {
+void fluid_3d::apply_hit_forcing(double forcing_frac) {
     hit_t_pack = hit_t_comm_g2s = hit_t_fft_fwd = hit_t_shell = 0.0;
     hit_t_fft_bwd = hit_t_comm_s2g = hit_t_unpack = 0.0;
-    if(spars->hit_use_fft) apply_hit_forcing_spectral_shell();
+     if(spars->hit_use_fft) apply_hit_forcing_spectral_shell(forcing_frac);
     else apply_hit_forcing_legacy_trig();
 }
 
@@ -2706,7 +2833,7 @@ void fluid_3d::apply_hit_forcing_legacy_trig() {
     communicate<1>();
 }
 
-void fluid_3d::apply_hit_forcing_spectral_shell() {
+void fluid_3d::apply_hit_forcing_spectral_shell(double forcing_frac) {
     if(!spars->hit_enable) return;
     if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
     if(!hit_fftw_mpi_ready) setup_hit_fftw_mpi();
@@ -2741,11 +2868,11 @@ MPI_Alltoallv(static_cast<void*>(hit_sbuf_to_slab.data()), hit_sc_to_slab.data()
 double t_comm_g2s_local = MPI_Wtime() - t0;
 
 t0 = MPI_Wtime();
-for(ptrdiff_t q=0;q<hit_alloc_local;q++) {
-    hit_ux[q][0]=hit_ux[q][1]=0.0;
-    hit_uy[q][0]=hit_uy[q][1]=0.0;
-    hit_uz[q][0]=hit_uz[q][1]=0.0;
-}
+ for(ptrdiff_t q=0;q<hit_alloc_local;q++) {
+        hit_ux[q][0]=hit_ux[q][1]=0.0;
+        hit_uy[q][0]=hit_uy[q][1]=0.0;
+        hit_uz[q][0]=hit_uz[q][1]=0.0;
+    }
 for(int r=0;r<grid->procs;r++) {
     int nrec = hit_rc_to_slab[r]/slab_msg_sz;
     hit_to_slab_msg *arr = hit_rbuf_to_slab.data() + (hit_rd_to_slab[r]/slab_msg_sz);
@@ -2832,19 +2959,81 @@ for(int r=0;r<grid->procs;r++) {
     spars->hit_alpha_last_state = hit_alpha_last;
     spars->hit_ramp_t0_state = hit_ramp_t0;
     spars->hit_freeze_steps_state = hit_freeze_steps;
-
-    // Shell-only correction (scale selected shell modes).
-    for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
-        ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
-        int kz = int(hit_local_0_start + lz);
-        int nx = (kx<=m/2)?kx:kx-m;
-        int ny = (ky<=n/2)?ky:ky-n;
-        int nz = (kz<=o/2)?kz:kz-o;
-        int k2i = nx*nx + ny*ny + nz*nz;
-        if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
-        hit_ux[idx][0] *= alpha_eff; hit_ux[idx][1] *= alpha_eff;
-        hit_uy[idx][0] *= alpha_eff; hit_uy[idx][1] *= alpha_eff;
-        hit_uz[idx][0] *= alpha_eff; hit_uz[idx][1] *= alpha_eff;
+   
+    const int forcing_mode = spars->hit_forcing_mode;
+    std::normal_distribution<double> nrm(0.0, 1.0);
+    if(forcing_mode==0) {
+        // Legacy shell scalar feedback.
+        for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
+            ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+            int kz = int(hit_local_0_start + lz);
+            int nx = (kx<=m/2)?kx:kx-m;
+            int ny = (ky<=n/2)?ky:ky-n;
+            int nz = (kz<=o/2)?kz:kz-o;
+            int k2i = nx*nx + ny*ny + nz*nz;
+            if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
+            hit_ux[idx][0] *= alpha_eff; hit_ux[idx][1] *= alpha_eff;
+            hit_uy[idx][0] *= alpha_eff; hit_uy[idx][1] *= alpha_eff;
+            hit_uz[idx][0] *= alpha_eff; hit_uz[idx][1] *= alpha_eff;
+        }
+    } else {
+        // Stochastic forcing to break phase locking: OU_random or random_divfree.
+        const double tau = (spars->hit_tau_force>0)?spars->hit_tau_force:std::max(dt,1e-12);
+        const double a = std::exp(-dt/std::max(tau,1e-12));
+        const double b = std::sqrt(std::max(0.0,1.0-a*a));
+        const double pwr = std::max(spars->hit_force_power, 0.0);
+        const double mode_amp = std::sqrt(pwr)*std::sqrt(std::max(dt, small_number));
+        for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
+            ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+            int kz = int(hit_local_0_start + lz);
+            int nx = (kx<=m/2)?kx:kx-m;
+            int ny = (ky<=n/2)?ky:ky-n;
+            int nz = (kz<=o/2)?kz:kz-o;
+            int k2i = nx*nx + ny*ny + nz*nz;
+            if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
+            if(forcing_mode==1) {
+                hit_fx_ou[idx][0] = a*hit_fx_ou[idx][0] + b*nrm(hit_rng);
+                hit_fx_ou[idx][1] = a*hit_fx_ou[idx][1] + b*nrm(hit_rng);
+                hit_fy_ou[idx][0] = a*hit_fy_ou[idx][0] + b*nrm(hit_rng);
+                hit_fy_ou[idx][1] = a*hit_fy_ou[idx][1] + b*nrm(hit_rng);
+                hit_fz_ou[idx][0] = a*hit_fz_ou[idx][0] + b*nrm(hit_rng);
+                hit_fz_ou[idx][1] = a*hit_fz_ou[idx][1] + b*nrm(hit_rng);
+            } else {
+                hit_fx_ou[idx][0] = nrm(hit_rng); hit_fx_ou[idx][1] = nrm(hit_rng);
+                hit_fy_ou[idx][0] = nrm(hit_rng); hit_fy_ou[idx][1] = nrm(hit_rng);
+                hit_fz_ou[idx][0] = nrm(hit_rng); hit_fz_ou[idx][1] = nrm(hit_rng);
+            }
+            hit_ux[idx][0] += mode_amp*hit_fx_ou[idx][0];
+            hit_ux[idx][1] += mode_amp*hit_fx_ou[idx][1];
+            hit_uy[idx][0] += mode_amp*hit_fy_ou[idx][0];
+            hit_uy[idx][1] += mode_amp*hit_fy_ou[idx][1];
+            hit_uz[idx][0] += mode_amp*hit_fz_ou[idx][0];
+            hit_uz[idx][1] += mode_amp*hit_fz_ou[idx][1];
+        }
+        // Re-project after stochastic coefficient injection to enforce div-free forcing.
+        for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
+            ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+            int kz = int(hit_local_0_start + lz);
+            int nx = (kx<=m/2)?kx:kx-m;
+            int ny = (ky<=n/2)?ky:ky-n;
+            int nz = (kz<=o/2)?kz:kz-o;
+            int k2i = nx*nx + ny*ny + nz*nz;
+            if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
+            double kxv = 2.0*M_PI*nx/mgmt->lx, kyv = 2.0*M_PI*ny/mgmt->ly, kzv = 2.0*M_PI*nz/mgmt->lz;
+            double k2 = kxv*kxv + kyv*kyv + kzv*kzv;
+            if(k2 <= small_number) continue;
+            double ur=hit_ux[idx][0], ui=hit_ux[idx][1];
+            double vr=hit_uy[idx][0], vi=hit_uy[idx][1];
+            double wr=hit_uz[idx][0], wi=hit_uz[idx][1];
+            double kdotr = kxv*ur + kyv*vr + kzv*wr;
+            double kdoti = kxv*ui + kyv*vi + kzv*wi;
+            hit_ux[idx][0] = ur - kxv*kdotr/k2;
+            hit_ux[idx][1] = ui - kxv*kdoti/k2;
+            hit_uy[idx][0] = vr - kyv*kdotr/k2;
+            hit_uy[idx][1] = vi - kyv*kdoti/k2;
+            hit_uz[idx][0] = wr - kzv*kdotr/k2;
+            hit_uz[idx][1] = wi - kzv*kdoti/k2;
+        }
     }
     double t_shell_local = MPI_Wtime() - t0;
     t0 = MPI_Wtime();
@@ -2879,19 +3068,25 @@ for(int r=0;r<grid->procs;r++) {
             if(i<0||i>=sm||j<0||j>=sn||k<0||k>=so) continue;
             int eid = index(i,j,k), ind = G0+eid;
             double old0=u0[eid].vel[0], old1=u0[eid].vel[1], old2=u0[eid].vel[2];
-            u0[eid].vel[0]=arr[a].u; u0[eid].vel[1]=arr[a].v; u0[eid].vel[2]=arr[a].w;
+            const bool rhs_mode = (spars->hit_forcing_insertion==2);
+            const double new0 = rhs_mode?old0:(old0 + forcing_frac*(arr[a].u-old0));
+            const double new1 = rhs_mode?old1:(old1 + forcing_frac*(arr[a].v-old1));
+            const double new2 = rhs_mode?old2:(old2 + forcing_frac*(arr[a].w-old2));
+            if(!rhs_mode) {
+                u0[eid].vel[0]=new0; u0[eid].vel[1]=new1; u0[eid].vel[2]=new2;
+            }
             const double fx=(arr[a].u-old0)/dt;
             const double fy=(arr[a].v-old1)/dt;
             const double fz=(arr[a].w-old2)/dt;
-            force_acc[0][ind]=fx;
-            force_acc[1][ind]=fy;
-            force_acc[2][ind]=fz;
-            const double umx = 0.5*(old0 + arr[a].u);
-            const double umy = 0.5*(old1 + arr[a].v);
-            const double umz = 0.5*(old2 + arr[a].w);
+            force_acc[0][ind]+=fx;
+            force_acc[1][ind]+=fy;
+            force_acc[2][ind]+=fz;
+            const double umx = 0.5*(old0 + new0);
+            const double umy = 0.5*(old1 + new1);
+            const double umz = 0.5*(old2 + new2);
             local_pin_hit += umx*fx + umy*fy + umz*fz;
             local_pin_total += umx*fx + umy*fy + umz*fz;
-            local_e_real += 0.5*(arr[a].u*arr[a].u + arr[a].v*arr[a].v + arr[a].w*arr[a].w);
+            local_e_real += 0.5*(new0*new0 + new1*new1 + new2*new2);
         }
     }
     double t_unpack_local = MPI_Wtime() - t0;

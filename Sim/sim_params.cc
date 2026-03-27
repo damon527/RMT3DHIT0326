@@ -33,12 +33,12 @@ sim_params::sim_params(const char *fn):
     ex_visc_mult(1.), ev_trans_mult(1.), sdt_pad(0.25),
     dt_ex_pad(0.8), weight_fac(0.25),
     gravity(0),
-    hit_enable(0), hit_phase(0), hit_kf2_max(2), hit_kf2_min(1), hit_use_fft(1), hit_init_seed(12345), hit_init_only(0),
+    hit_enable(0), hit_phase(0), hit_kf2_max(2), hit_kf2_min(1), hit_use_fft(1), hit_init_mode(1), hit_forcing_mode(1), hit_control_mode(1), hit_forcing_insertion(0), hit_init_seed(12345), hit_init_only(0),
     hit_bootstrap_steps(0), hit_insert_step(0), hit_recalibrate_target(0),
     hit_target_source(0),
     khm_enable(0), khm_out_stride(100), khm_pairs_per_sample(4096), khm_seed(24680),
      hit_quality_template_enable(0), hit_quality_stride(10), hit_quality_write_spectra(0), hit_quality_write_structures(0),
-    hit_target_urms(1.0), hit_k0(4.0), hit_beta(0.05), hit_tau_force(-1.0), hit_delta_alpha(0.005), hit_delta_alpha_rate(-1.0),
+      hit_target_urms(1.0), hit_k0(4.0), hit_init_k2_min(1.0), hit_init_k2_max(25.0), hit_force_power(0.10), hit_beta(0.05), hit_tau_force(-1.0), hit_delta_alpha(0.005), hit_delta_alpha_rate(-1.0),
     hit_e_floor(1e-12), hit_e_low_target(0.0), hit_ramp_time(0.5), hit_restart_freeze_time(0.1),
      hit_bootstrap_start_time(0.0), hit_quality_window_start_time(0.0), hit_quality_window_end_time(-1.0), hit_quality_tail_fraction(0.5), hit_quality_tol_k(0.10), hit_quality_tol_eps(0.10), hit_e_low_bar_state(0.0), hit_alpha_last_state(1.0),
     hit_ramp_t0_state(0.0), hit_freeze_steps_state(0),
@@ -232,6 +232,33 @@ sim_params::sim_params(const char *fn):
             hit_kf2_min = final_int(ln);
         } else if(se(bp, "hit_use_fft")){
             hit_use_fft = final_int(ln);
+          } else if(se(bp, "hit_init_mode")){
+            char *m = next_token(ln);
+            if(strcmp(m, "deterministic_lowmode")==0) hit_init_mode = 0;
+            else if(strcmp(m, "random_phase_spectrum")==0) hit_init_mode = 1;
+            else if(strcmp(m, "full_spectrum_random_phase")==0) hit_init_mode = 2;
+            else hit_init_mode = atoi(m);
+            check_no_more(ln);
+        } else if(se(bp, "hit_forcing_mode")){
+            char *m = next_token(ln);
+            if(strcmp(m, "shell_scalar")==0) hit_forcing_mode = 0;
+            else if(strcmp(m, "OU_random")==0) hit_forcing_mode = 1;
+            else if(strcmp(m, "random_divfree")==0) hit_forcing_mode = 2;
+            else hit_forcing_mode = atoi(m);
+            check_no_more(ln);
+        } else if(se(bp, "hit_control_mode")){
+            char *m = next_token(ln);
+            if(strcmp(m, "shell_energy_feedback")==0) hit_control_mode = 0;
+            else if(strcmp(m, "constant_power")==0) hit_control_mode = 1;
+            else hit_control_mode = atoi(m);
+            check_no_more(ln);
+        } else if(se(bp, "hit_forcing_insertion")){
+            char *m = next_token(ln);
+            if(strcmp(m, "end_step")==0) hit_forcing_insertion = 0;
+            else if(strcmp(m, "split_half")==0) hit_forcing_insertion = 1;
+            else if(strcmp(m, "rhs_source")==0) hit_forcing_insertion = 2;
+            else hit_forcing_insertion = atoi(m);
+            check_no_more(ln);
         } else if(se(bp, "hit_init_seed")){
             hit_init_seed = final_int(ln);
         } else if(se(bp, "hit_init_only")){
@@ -253,6 +280,12 @@ sim_params::sim_params(const char *fn):
             hit_target_urms = final_double(ln);
         } else if(se(bp, "hit_k0")){
             hit_k0 = final_double(ln);
+       } else if(se(bp, "hit_init_k2_min")){
+            hit_init_k2_min = final_double(ln);
+        } else if(se(bp, "hit_init_k2_max")){
+            hit_init_k2_max = final_double(ln);
+        } else if(se(bp, "hit_force_power")){
+            hit_force_power = final_double(ln);
         } else if(se(bp, "hit_beta")){
             hit_beta = final_double(ln);
          } else if(se(bp, "hit_tau_force")){
@@ -637,6 +670,10 @@ void sim_params::write_params(const char * chk_dirname){
                     "hit_enable                %d\n"
                     "hit_phase                 %d\n"
                     "hit_use_fft               %d\n"
+                    "hit_init_mode             %d\n"
+                    "hit_forcing_mode          %d\n"
+                    "hit_control_mode          %d\n"
+                    "hit_forcing_insertion     %d\n"
                     "hit_kf2_max               %d\n"
                     "hit_kf2_min               %d\n"
                     "hit_init_seed             %d\n"
@@ -647,6 +684,9 @@ void sim_params::write_params(const char * chk_dirname){
                     "hit_target_source         %d\n"
                     "hit_target_urms           %g\n"
                     "hit_k0                    %g\n"
+                    "hit_init_k2_min           %g\n"
+                    "hit_init_k2_max           %g\n"
+                    "hit_force_power           %g\n"
                     "hit_beta                  %g\n"
                     "hit_tau_force             %g\n"
                     "hit_delta_alpha           %g\n"
@@ -673,9 +713,9 @@ void sim_params::write_params(const char * chk_dirname){
                     "hit_quality_tail_fraction     %g\n"
                     "hit_quality_tol_k             %g\n"
                     "hit_quality_tol_eps           %g\n",
-                    hit_enable, hit_phase, hit_use_fft, hit_kf2_max, hit_kf2_min, hit_init_seed, hit_init_only,
+                     hit_enable, hit_phase, hit_use_fft, hit_init_mode, hit_forcing_mode, hit_control_mode, hit_forcing_insertion, hit_kf2_max, hit_kf2_min, hit_init_seed, hit_init_only,
                     hit_bootstrap_steps, hit_insert_step, hit_recalibrate_target, hit_target_source,
-                    hit_target_urms, hit_k0, hit_beta, hit_tau_force, hit_delta_alpha, hit_delta_alpha_rate, hit_e_floor, hit_e_low_target,
+                    hit_target_urms, hit_k0, hit_init_k2_min, hit_init_k2_max, hit_force_power, hit_beta, hit_tau_force, hit_delta_alpha, hit_delta_alpha_rate, hit_e_floor, hit_e_low_target,
                     hit_ramp_time, hit_restart_freeze_time, hit_bootstrap_start_time,
                     hit_e_low_bar_state, hit_alpha_last_state, hit_ramp_t0_state, hit_freeze_steps_state,
                     khm_enable, khm_out_stride, khm_pairs_per_sample, khm_seed,

@@ -105,6 +105,10 @@ class sim_params{
     int hit_kf2_max;
     int hit_kf2_min;
     int hit_use_fft;
+     int hit_init_mode;      // 0 deterministic_lowmode, 1 random_phase_spectrum, 2 full_spectrum_random_phase
+    int hit_forcing_mode;   // 0 shell_scalar, 1 OU_random, 2 random_divfree
+    int hit_control_mode;   // 0 shell_energy_feedback, 1 constant_power
+    int hit_forcing_insertion; // 0 end_step, 1 split_half, 2 rhs_source
     int hit_init_seed;
     int hit_init_only;
     int hit_bootstrap_steps;
@@ -121,6 +125,9 @@ class sim_params{
     int hit_quality_write_structures;
     double hit_target_urms;
     double hit_k0;
+     double hit_init_k2_min;
+    double hit_init_k2_max;
+    double hit_force_power;
     double hit_beta;
     double hit_tau_force;
     double hit_delta_alpha;

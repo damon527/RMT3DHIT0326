@@ -198,6 +198,8 @@ class fluid_3d {
     bool hit_fftw_mpi_ready;
     ptrdiff_t hit_alloc_local, hit_local_n0, hit_local_0_start;
     fftw_complex *hit_ux, *hit_uy, *hit_uz;
+    fftw_complex *hit_fx_ou, *hit_fy_ou, *hit_fz_ou;
+    bool hit_ou_initialized;
     fftw_plan hit_px_f, hit_py_f, hit_pz_f, hit_px_b, hit_py_b, hit_pz_b;
     std::vector<int> hit_slab_n0, hit_slab_start;
     std::vector<int> hit_rank_bounds;
@@ -489,9 +491,12 @@ class fluid_3d {
     void compute_v_centroid();
   // HIT + diagnostics
     void initialize_hit_field();
-    void apply_hit_forcing();
+    void initialize_hit_field_deterministic();
+    void initialize_hit_field_random_phase();
+    void initialize_hit_field_full_spectrum_random_phase();
+    void apply_hit_forcing(double forcing_frac=1.0);
     void apply_hit_forcing_legacy_trig();
-    void apply_hit_forcing_spectral_shell();
+     void apply_hit_forcing_spectral_shell(double forcing_frac=1.0);
     void setup_hit_fftw_mpi();
     void cleanup_hit_fftw_mpi();
     void update_khm_fields();
