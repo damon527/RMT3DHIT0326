@@ -12,6 +12,13 @@ inline int hit_owner_rank(const std::vector<int> &bounds, int procs, int gx, int
     }
     return 0;
 }
+inline unsigned long long hit_mode_seed(int base_seed, int nx, int ny, int nz) {
+    const unsigned long long h0 = 0x9e3779b97f4a7c15ULL;
+    const unsigned long long hx = static_cast<unsigned long long>(static_cast<long long>(nx) * 73856093LL);
+    const unsigned long long hy = static_cast<unsigned long long>(static_cast<long long>(ny) * 19349663LL);
+    const unsigned long long hz = static_cast<unsigned long long>(static_cast<long long>(nz) * 83492791LL);
+    return static_cast<unsigned long long>(base_seed) ^ h0 ^ hx ^ hy ^ hz;
+}
 }
 
 /**
@@ -2471,7 +2478,8 @@ void fluid_3d::setup_hit_fftw_mpi() {
     }
     hit_sbuf_to_slab.assign(sTot/int(sizeof(hit_to_slab_msg)), hit_to_slab_msg());
     hit_rbuf_to_slab.assign(rTot/int(sizeof(hit_to_slab_msg)), hit_to_slab_msg());
-
+    hit_rec_to_slab.assign(grid->procs, 0);
+    
     hit_slab_to_grid.clear();
     hit_slab_to_grid.reserve(hit_alloc_local);
     std::vector<int> send_recs_to_grid(grid->procs, 0);
@@ -2498,6 +2506,7 @@ void fluid_3d::setup_hit_fftw_mpi() {
     }
     hit_sbuf_to_grid.assign(sTot/int(sizeof(hit_to_grid_msg)), hit_to_grid_msg());
     hit_rbuf_to_grid.assign(rTot/int(sizeof(hit_to_grid_msg)), hit_to_grid_msg());
+    hit_rec_to_grid.assign(grid->procs, 0);
     hit_fftw_mpi_ready = true;
 }
 
@@ -2520,6 +2529,8 @@ void fluid_3d::cleanup_hit_fftw_mpi() {
     hit_ou_initialized = false;
     hit_local_to_slab.clear();
     hit_slab_to_grid.clear();
+    hit_rec_to_slab.clear();
+    hit_rec_to_grid.clear();
     hit_sbuf_to_slab.clear(); hit_rbuf_to_slab.clear();
     hit_sbuf_to_grid.clear(); hit_rbuf_to_grid.clear();
     hit_fftw_mpi_ready = false;
@@ -2602,46 +2613,109 @@ void fluid_3d::initialize_hit_field_random_phase() {
 
 void fluid_3d::initialize_hit_field_full_spectrum_random_phase() {
     if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
-    std::uniform_real_distribution<double> uni01(0.0, 1.0);
+    if(!hit_fftw_mpi_ready) setup_hit_fftw_mpi();
+    const ptrdiff_t slab_plane = ptrdiff_t(n)*ptrdiff_t(m);
     const double twopi = 2.0*M_PI;
     const int k2min = std::max(1, int(std::floor(spars->hit_init_k2_min)));
     const int k2max = std::max(k2min, int(std::floor(spars->hit_init_k2_max)));
-    const int kmax = int(std::ceil(std::sqrt(double(k2max))));
-    const double k0 = std::max(spars->hit_k0, 1.0);
-    struct mode_s { int kx,ky,kz; double amp, ph, ex,ey,ez; };
-    std::vector<mode_s> modes;
-    modes.reserve((2*kmax+1)*(2*kmax+1)*(2*kmax+1));
-    for(int kx=-kmax;kx<=kmax;kx++) for(int ky=-kmax;ky<=kmax;ky++) for(int kz=-kmax;kz<=kmax;kz++) {
-        if(kx==0 && ky==0 && kz==0) continue;
-        const int k2 = kx*kx + ky*ky + kz*kz;
-        if(k2<k2min || k2>k2max) continue;
-        const double km = std::sqrt(double(k2));
-        const double e0 = std::pow(km/k0,4.0)*std::exp(-2.0*std::pow(km/k0,2.0));
-        mode_s md;
-        md.kx=kx; md.ky=ky; md.kz=kz; md.amp=std::sqrt(std::max(e0,1e-16)); md.ph=twopi*uni01(hit_rng);
-        double rx = 2.0*uni01(hit_rng)-1.0, ry = 2.0*uni01(hit_rng)-1.0, rz = 2.0*uni01(hit_rng)-1.0;
-        const double kn = std::sqrt(double(kx*kx+ky*ky+kz*kz));
-        const double kxn = kx/kn, kyn=ky/kn, kzn=kz/kn;
-        const double dot = rx*kxn + ry*kyn + rz*kzn;
-        rx -= dot*kxn; ry -= dot*kyn; rz -= dot*kzn;
-        double rn = std::sqrt(rx*rx+ry*ry+rz*rz);
-        if(rn<1e-12) { rx=-kyn; ry=kxn; rz=0.0; rn = std::sqrt(rx*rx+ry*ry+rz*rz); }
-        md.ex=rx/rn; md.ey=ry/rn; md.ez=rz/rn;
-        modes.push_back(md);
+   const double kf = std::sqrt(double(std::max(spars->hit_kf2_max, 1)));
+    const double inv_kf2 = 1.0/(kf*kf);
+    const double e_fac = 9.0/(11.0*kf);
+    for(ptrdiff_t q=0; q<hit_alloc_local; q++) {
+        hit_ux[q][0]=hit_ux[q][1]=0.0;
+        hit_uy[q][0]=hit_uy[q][1]=0.0;
+        hit_uz[q][0]=hit_uz[q][1]=0.0;
     }
-    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
-        const int ind = index(i,j,k);
-        const double x = lx0[i], y = ly0[j], z = lz0[k];
-        double u=0,v=0,w=0;
-        for(size_t q=0;q<modes.size();q++) {
-            const mode_s &md = modes[q];
-            const double arg = twopi*(md.kx*x/mgmt->lx + md.ky*y/mgmt->ly + md.kz*z/mgmt->lz) + md.ph;
-            const double s = std::sin(arg);
-            u += md.amp*md.ex*s;
-            v += md.amp*md.ey*s;
-            w += md.amp*md.ez*s;
+    
+     for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0; ky<n; ky++) for(int kx=0; kx<m; kx++) {
+        const ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+        const int kz = int(hit_local_0_start + lz);
+        const int nx = (kx<=m/2)?kx:kx-m;
+        const int ny = (ky<=n/2)?ky:ky-n;
+        const int nz = (kz<=o/2)?kz:kz-o;
+        const int k2i = nx*nx + ny*ny + nz*nz;
+        if(k2i==0 || k2i<k2min || k2i>k2max) continue;
+        const double km = std::sqrt(double(k2i));
+        const double ksq = std::sqrt(double(nx*nx + ny*ny));
+        const double ksafe = std::max(km, small_number);
+        const double ksq_safe = std::max(ksq, small_number);
+        const double kk_safe = std::max(double(k2i), small_number);
+        const double e_low = std::sqrt(e_fac*double(k2i)*inv_kf2);
+        const double e_hi = std::sqrt(e_fac*std::pow(std::max(km/kf, small_number), -5.0/3.0));
+        const double ek = (k2i <= spars->hit_kf2_max) ? e_low : e_hi;
+        std::mt19937_64 mode_rng(hit_mode_seed(spars->hit_init_seed, nx, ny, nz));
+        std::uniform_real_distribution<double> uni01(0.0, 1.0);
+        const double theta1 = twopi*uni01(mode_rng);
+        const double theta2 = twopi*uni01(mode_rng);
+        const double phi = twopi*uni01(mode_rng);
+        const double aamp = std::sqrt(std::max(ek/(4.0*M_PI*kk_safe), 0.0));
+        const double cphi = std::cos(phi), sphi = std::sin(phi);
+        const double a_r = aamp*std::cos(theta1)*cphi;
+        const double a_i = aamp*std::sin(theta1)*cphi;
+        const double b_r = aamp*std::cos(theta2)*sphi;
+        const double b_i = aamp*std::sin(theta2)*sphi;
+        const double ax = (a_r*ksafe*ny + b_r*nx*nz)/(ksafe*ksq_safe);
+        const double ay = (b_r*ny*nz - a_r*ksafe*nx)/(ksafe*ksq_safe);
+        const double az = b_r*ksq_safe/ksafe;
+        const double bx = (a_i*ksafe*ny + b_i*nx*nz)/(ksafe*ksq_safe);
+        const double by = (b_i*ny*nz - a_i*ksafe*nx)/(ksafe*ksq_safe);
+        const double bz = b_i*ksq_safe/ksafe;
+        hit_ux[idx][0] = ax; hit_ux[idx][1] = bx;
+        hit_uy[idx][0] = ay; hit_uy[idx][1] = by;
+        hit_uz[idx][0] = az; hit_uz[idx][1] = bz;
+    }
+    // Enforce incompressibility in spectral space.
+    for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0; ky<n; ky++) for(int kx=0; kx<m; kx++) {
+        const ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+        const int kz = int(hit_local_0_start + lz);
+        const int nx = (kx<=m/2)?kx:kx-m;
+        const int ny = (ky<=n/2)?ky:ky-n;
+        const int nz = (kz<=o/2)?kz:kz-o;
+        const double kxv = 2.0*M_PI*nx/mgmt->lx, kyv = 2.0*M_PI*ny/mgmt->ly, kzv = 2.0*M_PI*nz/mgmt->lz;
+        const double k2 = kxv*kxv + kyv*kyv + kzv*kzv;
+        if(k2 <= small_number) {
+            hit_ux[idx][0]=hit_ux[idx][1]=0.0;
+            hit_uy[idx][0]=hit_uy[idx][1]=0.0;
+            hit_uz[idx][0]=hit_uz[idx][1]=0.0;
+            continue;
         }
-        u0[ind].vel[0]=u; u0[ind].vel[1]=v; u0[ind].vel[2]=w;
+        double ur=hit_ux[idx][0], ui=hit_ux[idx][1];
+        double vr=hit_uy[idx][0], vi=hit_uy[idx][1];
+        double wr=hit_uz[idx][0], wi=hit_uz[idx][1];
+        const double kdotr = kxv*ur + kyv*vr + kzv*wr;
+        const double kdoti = kxv*ui + kyv*vi + kzv*wi;
+        hit_ux[idx][0] = ur - kxv*kdotr/k2; hit_ux[idx][1] = ui - kxv*kdoti/k2;
+        hit_uy[idx][0] = vr - kyv*kdotr/k2; hit_uy[idx][1] = vi - kyv*kdoti/k2;
+        hit_uz[idx][0] = wr - kzv*kdotr/k2; hit_uz[idx][1] = wi - kzv*kdoti/k2;
+    }
+    fftw_execute(hit_px_b); fftw_execute(hit_py_b); fftw_execute(hit_pz_b);
+    const double invN = 1.0/double(m*n*o);
+    if((int)hit_rec_to_grid.size() != grid->procs) hit_rec_to_grid.assign(grid->procs, 0);
+    std::fill(hit_rec_to_grid.begin(), hit_rec_to_grid.end(), 0);
+    hit_to_grid_msg *send_to_grid = hit_sbuf_to_grid.data();
+    const int grid_msg_sz = int(sizeof(hit_to_grid_msg));
+    for(size_t q=0; q<hit_slab_to_grid.size(); q++) {
+        const hit_slab_to_grid_entry &e = hit_slab_to_grid[q];
+        const int slot = hit_rec_to_grid[e.dest]++;
+        hit_to_grid_msg &msg = send_to_grid[(hit_sd_to_grid[e.dest]/grid_msg_sz) + slot];
+        msg.gx = e.gx; msg.gy = e.gy; msg.gz = e.gz;
+        msg.u = hit_ux[e.slab_idx][0]*invN;
+        msg.v = hit_uy[e.slab_idx][0]*invN;
+        msg.w = hit_uz[e.slab_idx][0]*invN;
+    }
+    MPI_Alltoallv(static_cast<void*>(hit_sbuf_to_grid.data()), hit_sc_to_grid.data(), hit_sd_to_grid.data(), MPI_BYTE,
+                  static_cast<void*>(hit_rbuf_to_grid.data()), hit_rc_to_grid.data(), hit_rd_to_grid.data(), MPI_BYTE, world);
+    for(int r=0; r<grid->procs; r++) {
+        const int nrec = hit_rc_to_grid[r]/grid_msg_sz;
+        hit_to_grid_msg *arr = hit_rbuf_to_grid.data() + (hit_rd_to_grid[r]/grid_msg_sz);
+        for(int a=0; a<nrec; a++) {
+            const int i = arr[a].gx - ai, j = arr[a].gy - aj, k = arr[a].gz - ak;
+            if(i<0||i>=sm||j<0||j>=sn||k<0||k>=so) continue;
+            const int eid = index(i,j,k);
+            u0[eid].vel[0]=arr[a].u;
+            u0[eid].vel[1]=arr[a].v;
+            u0[eid].vel[2]=arr[a].w;
+        }
     }
     communicate<1>();
 }
@@ -2850,11 +2924,12 @@ void fluid_3d::apply_hit_forcing_spectral_shell(double forcing_frac) {
   const int slab_msg_sz = int(sizeof(hit_to_slab_msg));
 const int grid_msg_sz = int(sizeof(hit_to_grid_msg));
 double t0 = MPI_Wtime();
-std::vector<int> rec_to_slab(grid->procs,0);
+if((int)hit_rec_to_slab.size() != grid->procs) hit_rec_to_slab.assign(grid->procs, 0);
+std::fill(hit_rec_to_slab.begin(), hit_rec_to_slab.end(), 0);
 hit_to_slab_msg *send_to_slab = hit_sbuf_to_slab.data();
 for(size_t q=0; q<hit_local_to_slab.size(); q++) {
     const hit_local_to_slab_entry &e = hit_local_to_slab[q];
-    const int slot = rec_to_slab[e.dest]++;
+    const int slot = hit_rec_to_slab[e.dest]++;
     hit_to_slab_msg &msg = send_to_slab[(hit_sd_to_slab[e.dest]/slab_msg_sz) + slot];
     msg.idx = e.slab_idx;
     msg.u = u0[e.eid].vel[0];
@@ -2939,8 +3014,15 @@ for(int r=0;r<grid->procs;r++) {
     const double beta = std::max(0.0, std::min(1.0, beta_raw));
     hit_last_tau_force = (beta>0.0)?(dt/beta):0.0;
     hit_e_low_bar = (1.0-beta)*hit_e_low_bar + beta*e_band;
-    const double err = (spars->hit_e_low_target - hit_e_low_bar)/std::max(spars->hit_e_low_target, small_number);
-    const double alpha_t = 1.0 + err;
+     double alpha_t = 1.0;
+    if(spars->hit_control_mode==0) {
+        const double e_unforced = std::max(0.0, diag.e_total - e_band);
+        const double alpha2 = std::max(0.0, (spars->hit_e_low_target - e_unforced)/std::max(e_band, spars->hit_e_floor));
+        alpha_t = std::sqrt(alpha2);
+    } else {
+        const double err = (spars->hit_e_low_target - hit_e_low_bar)/std::max(spars->hit_e_low_target, small_number);
+        alpha_t = 1.0 + err;
+    }
     double delta_alpha_eff = spars->hit_delta_alpha;
     if(spars->hit_delta_alpha_rate > 0.0) delta_alpha_eff = spars->hit_delta_alpha_rate*dt;
     delta_alpha_eff = std::max(0.0, delta_alpha_eff);
@@ -2962,21 +3044,19 @@ for(int r=0;r<grid->procs;r++) {
    
     const int forcing_mode = spars->hit_forcing_mode;
     std::normal_distribution<double> nrm(0.0, 1.0);
-    if(forcing_mode==0) {
-        // Legacy shell scalar feedback.
-        for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
-            ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
-            int kz = int(hit_local_0_start + lz);
-            int nx = (kx<=m/2)?kx:kx-m;
-            int ny = (ky<=n/2)?ky:ky-n;
-            int nz = (kz<=o/2)?kz:kz-o;
-            int k2i = nx*nx + ny*ny + nz*nz;
-            if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
-            hit_ux[idx][0] *= alpha_eff; hit_ux[idx][1] *= alpha_eff;
-            hit_uy[idx][0] *= alpha_eff; hit_uy[idx][1] *= alpha_eff;
-            hit_uz[idx][0] *= alpha_eff; hit_uz[idx][1] *= alpha_eff;
-        }
-    } else {
+for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
+        ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+        int kz = int(hit_local_0_start + lz);
+        int nx = (kx<=m/2)?kx:kx-m;
+        int ny = (ky<=n/2)?ky:ky-n;
+        int nz = (kz<=o/2)?kz:kz-o;
+        int k2i = nx*nx + ny*ny + nz*nz;
+        if(k2i < spars->hit_kf2_min || k2i > spars->hit_kf2_max) continue;
+        hit_ux[idx][0] *= alpha_eff; hit_ux[idx][1] *= alpha_eff;
+        hit_uy[idx][0] *= alpha_eff; hit_uy[idx][1] *= alpha_eff;
+        hit_uz[idx][0] *= alpha_eff; hit_uz[idx][1] *= alpha_eff;
+    }
+    if(forcing_mode!=0) {
         // Stochastic forcing to break phase locking: OU_random or random_divfree.
         const double tau = (spars->hit_tau_force>0)?spars->hit_tau_force:std::max(dt,1e-12);
         const double a = std::exp(-dt/std::max(tau,1e-12));
@@ -3041,14 +3121,15 @@ for(int r=0;r<grid->procs;r++) {
     double t_fft_bwd_local = MPI_Wtime() - t0;
 
     t0 = MPI_Wtime();
-    std::vector<int> rec_to_grid(grid->procs,0);
+    if((int)hit_rec_to_grid.size() != grid->procs) hit_rec_to_grid.assign(grid->procs, 0);
+    std::fill(hit_rec_to_grid.begin(), hit_rec_to_grid.end(), 0);
     hit_to_grid_msg *send_to_grid = hit_sbuf_to_grid.data();
    double local_pin_hit = 0.0;
 double local_pin_total = 0.0;
 double local_e_real = 0.0;
 for(size_t q=0; q<hit_slab_to_grid.size(); q++) {
     const hit_slab_to_grid_entry &e = hit_slab_to_grid[q];
-    const int slot = rec_to_grid[e.dest]++;
+     const int slot = hit_rec_to_grid[e.dest]++;
     hit_to_grid_msg &msg = send_to_grid[(hit_sd_to_grid[e.dest]/grid_msg_sz) + slot];
     msg.gx = e.gx; msg.gy = e.gy; msg.gz = e.gz;
     msg.u = hit_ux[e.slab_idx][0]*invN;

@@ -210,7 +210,7 @@ class fluid_3d {
     std::vector<int> hit_z_to_slab_rank;
     std::vector<hit_local_to_slab_entry> hit_local_to_slab;
     std::vector<hit_slab_to_grid_entry> hit_slab_to_grid;
-    std::vector<int> hit_sc_to_slab, hit_rc_to_slab, hit_sd_to_slab, hit_rd_to_slab;
+    std::vector<int> hit_rec_to_slab, hit_rec_to_grid;
     std::vector<int> hit_sc_to_grid, hit_rc_to_grid, hit_sd_to_grid, hit_rd_to_grid;
     std::vector<hit_to_slab_msg> hit_sbuf_to_slab, hit_rbuf_to_slab;
     std::vector<hit_to_grid_msg> hit_sbuf_to_grid, hit_rbuf_to_grid;
