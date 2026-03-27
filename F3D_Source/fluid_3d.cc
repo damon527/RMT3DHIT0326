@@ -79,6 +79,11 @@ fluid_3d::fluid_3d(geometry *gm, sim_manager *mgmt_, sim_params *spars_) :
     hit_fftw_mpi_ready(false), hit_alloc_local(0), hit_local_n0(0), hit_local_0_start(0),
     hit_ux(NULL), hit_uy(NULL), hit_uz(NULL),
     hit_px_f(NULL), hit_py_f(NULL), hit_pz_f(NULL), hit_px_b(NULL), hit_py_b(NULL), hit_pz_b(NULL),
+    hit_last_e_total_spec(0), hit_last_e_total_real(0), hit_last_e_unforced(0),
+    hit_last_pin_hit(0), hit_last_pin_total(0), hit_last_tau_force(0), hit_last_delta_alpha_eff(0), hit_last_n_forced_modes(0),
+    hit_q_n(0), hit_q_sum_k(0), hit_q_sum_k2(0), hit_q_sum_eps(0), hit_q_sum_eps2(0),
+    hit_q_sum_sx(0), hit_q_sum_sy(0), hit_q_sum_sz(0), hit_q_sum_sx2(0), hit_q_sum_sy2(0), hit_q_sum_sz2(0),
+    hit_q_k_ref(0), hit_q_eps_ref(0), hit_q_inband_k(0), hit_q_inband_eps(0), hit_q_ref_initialized(false),
     watch("F3d", 5, "Extrapolation", "Pressure Poisson", "Communication", "Stresses", "MAC"),
 	expper(*gm, mgmt->weight_fac, spars),
 	osm(NULL),osn(NULL),oso(NULL),max_sizes(NULL),
@@ -2542,6 +2547,54 @@ void fluid_3d::apply_hit_forcing() {
     else apply_hit_forcing_legacy_trig();
 }
 
+fluid_3d::HitSpectralEnergyDiag fluid_3d::compute_hit_spectral_energy_diag(int kf2_min, int kf2_max) const {
+    // Parseval convention for this code path:
+    // - FFTW forward/backward plans are both unnormalized.
+    // - After backward FFT we divide by N = m*n*o (see writeback path below).
+    // - Therefore kinetic-energy density K = 0.5 * <|u|^2> can be computed in spectral space as
+    //   K = 0.5 * sum_k |u_hat(k)|^2 / N^2 over all stored modes for the complex grid.
+    // Returned quantities are all kinetic-energy densities (per-unit-volume) with the same
+    // normalization and shell criterion (kf2_min <= k^2 <= kf2_max, excluding k=0).
+    const int N = m*n*o;
+    const double invN2 = 1.0/(double(N)*double(N));
+    const ptrdiff_t slab_plane = ptrdiff_t(n)*ptrdiff_t(m);
+    double e_tot_local = 0.0;
+    double e_band_local = 0.0;
+    double e_shell_raw_local = 0.0;
+    long long n_forced_local = 0;
+    for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0; ky<n; ky++) for(int kx=0; kx<m; kx++) {
+        const ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+        const int kz = int(hit_local_0_start + lz);
+        const int nx = (kx<=m/2)?kx:kx-m;
+        const int ny = (ky<=n/2)?ky:ky-n;
+        const int nz = (kz<=o/2)?kz:kz-o;
+        const int k2i = nx*nx + ny*ny + nz*nz;
+        const double ur=hit_ux[idx][0], ui=hit_ux[idx][1];
+        const double vr=hit_uy[idx][0], vi=hit_uy[idx][1];
+        const double wr=hit_uz[idx][0], wi=hit_uz[idx][1];
+        const double shell_raw = (ur*ur+ui*ui+vr*vr+vi*vi+wr*wr+wi*wi);
+        const double e_mode = 0.5*shell_raw*invN2;
+        e_tot_local += e_mode;
+        if(k2i==0) continue;
+        if(k2i < kf2_min || k2i > kf2_max) continue;
+        e_band_local += e_mode;
+        e_shell_raw_local += shell_raw;
+        n_forced_local++;
+    }
+    HitSpectralEnergyDiag diag;
+    diag.e_total = 0.0;
+    diag.e_forced_band = 0.0;
+    diag.e_unforced = 0.0;
+    diag.e_shell_raw = 0.0;
+    diag.n_forced_modes = 0;
+    MPI_Allreduce(&e_tot_local, &diag.e_total, 1, MPI_DOUBLE, MPI_SUM, world);
+    MPI_Allreduce(&e_band_local, &diag.e_forced_band, 1, MPI_DOUBLE, MPI_SUM, world);
+    MPI_Allreduce(&e_shell_raw_local, &diag.e_shell_raw, 1, MPI_DOUBLE, MPI_SUM, world);
+    MPI_Allreduce(&n_forced_local, &diag.n_forced_modes, 1, MPI_LONG_LONG, MPI_SUM, world);
+    diag.e_unforced = std::max(0.0, diag.e_total - diag.e_forced_band);
+    return diag;
+}
+
 void fluid_3d::apply_hit_forcing_legacy_trig() {
     if(!spars->hit_enable) return;
     if(!(grid->x_prd && grid->y_prd && grid->z_prd)) return;
@@ -2639,8 +2692,17 @@ void fluid_3d::apply_hit_forcing_legacy_trig() {
             force_acc[c][G0+ind] = du/dt;
         }
     }
-    hit_last_e_low = e_low;
+    const double volN = double(m*n*o);
+    hit_last_e_low = e_low/volN;
     hit_last_e_tot = e_tot;
+    hit_last_e_total_spec = e_tot/volN;
+    hit_last_e_total_real = e_tot/volN;
+    hit_last_e_unforced = std::max(0.0, hit_last_e_total_real - hit_last_e_low);
+    hit_last_pin_hit = 0.0;
+    hit_last_pin_total = 0.0;
+    hit_last_tau_force = 0.0;
+    hit_last_delta_alpha_eff = 0.0;
+    hit_last_n_forced_modes = 0;
     communicate<1>();
 }
 
@@ -2699,11 +2761,6 @@ for(int r=0;r<grid->procs;r++) {
     double t_fft_fwd_local = MPI_Wtime() - t0;
 
     t0 = MPI_Wtime();
-    double e_low_local = 0.0, e_tot_local = 0.0, e_low = 0.0, e_tot = 0.0;
-    for(ptrdiff_t q=0;q<hit_alloc_local;q++) {
-        double u0x = hit_ux[q][0], u0y = hit_uy[q][0], u0z = hit_uz[q][0];
-        e_tot_local += 0.5*(u0x*u0x+u0y*u0y+u0z*u0z);
-    }
     // Shell extraction on locally owned spectral coefficients.
     for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0;ky<n;ky++) for(int kx=0;kx<m;kx++) {
         ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
@@ -2733,27 +2790,35 @@ for(int r=0;r<grid->procs;r++) {
         hit_ux[idx][0]=ur; hit_ux[idx][1]=ui;
         hit_uy[idx][0]=vr; hit_uy[idx][1]=vi;
         hit_uz[idx][0]=wr; hit_uz[idx][1]=wi;
-        e_low_local += 0.5*((ur*ur+ui*ui+vr*vr+vi*vi+wr*wr+wi*wi)*invN*invN);
     }
-    MPI_Allreduce(&e_low_local,&e_low,1,MPI_DOUBLE,MPI_SUM,world);
-    MPI_Allreduce(&e_tot_local,&e_tot,1,MPI_DOUBLE,MPI_SUM,world);
+   HitSpectralEnergyDiag diag = compute_hit_spectral_energy_diag(spars->hit_kf2_min, spars->hit_kf2_max);
+    const double e_band = diag.e_forced_band;
 
     if(spars->hit_target_source==1) {
     } else if(hit_phase_state==2 && spars->hit_target_source==0) {
         if(time>=spars->hit_bootstrap_start_time) {
-            hit_bootstrap_sum += e_low; hit_bootstrap_count += 1.0;
+            hit_bootstrap_sum += e_band; hit_bootstrap_count += 1.0;
             spars->hit_e_low_target = hit_bootstrap_sum/std::max(1.0, hit_bootstrap_count);
         }
         if(spars->hit_bootstrap_steps>0 && hit_step>=spars->hit_bootstrap_steps) {
             hit_phase_state=3; spars->hit_phase=3; hit_ramp_t0=time;
         }
     } else if(spars->hit_target_source==2 || spars->hit_recalibrate_target) {
-        spars->hit_e_low_target = e_low;
+        spars->hit_e_low_target = e_band;
     }
-    if(spars->hit_e_low_target<=0) spars->hit_e_low_target = std::max(e_low,spars->hit_e_floor);
-    hit_e_low_bar = (1.0-spars->hit_beta)*hit_e_low_bar + spars->hit_beta*e_low;
-    double alpha_t = std::sqrt(spars->hit_e_low_target/std::max(hit_e_low_bar,spars->hit_e_floor));
-    double dal = std::max(-spars->hit_delta_alpha, std::min(spars->hit_delta_alpha, alpha_t-1.0));
+     if(spars->hit_e_low_target<=0) spars->hit_e_low_target = std::max(e_band,spars->hit_e_floor);
+    double beta_raw = spars->hit_beta;
+    if(spars->hit_tau_force > 0.0) beta_raw = dt/std::max(spars->hit_tau_force, small_number);
+    const double beta = std::max(0.0, std::min(1.0, beta_raw));
+    hit_last_tau_force = (beta>0.0)?(dt/beta):0.0;
+    hit_e_low_bar = (1.0-beta)*hit_e_low_bar + beta*e_band;
+    const double err = (spars->hit_e_low_target - hit_e_low_bar)/std::max(spars->hit_e_low_target, small_number);
+    const double alpha_t = 1.0 + err;
+    double delta_alpha_eff = spars->hit_delta_alpha;
+    if(spars->hit_delta_alpha_rate > 0.0) delta_alpha_eff = spars->hit_delta_alpha_rate*dt;
+    delta_alpha_eff = std::max(0.0, delta_alpha_eff);
+    hit_last_delta_alpha_eff = delta_alpha_eff;
+    const double dal = std::max(-delta_alpha_eff, std::min(delta_alpha_eff, alpha_t-1.0));
     double alpha = 1.0 + dal;
     if(hit_freeze_steps>0) { alpha = 1.0; hit_freeze_steps--; }
     double ramp=1.0;
@@ -2761,7 +2826,7 @@ for(int r=0;r<grid->procs;r++) {
         double tau = std::max(0.0,std::min(1.0,(time-hit_ramp_t0)/spars->hit_ramp_time));
         ramp = 0.5*(1.0-cos(M_PI*tau));
     }
-    double alpha_eff = 1.0 + ramp*(alpha-1.0);
+    const double alpha_eff = 1.0 + ramp*(alpha-1.0);
     hit_alpha_last = alpha_eff;
     spars->hit_e_low_bar_state = hit_e_low_bar;
     spars->hit_alpha_last_state = hit_alpha_last;
@@ -2789,6 +2854,9 @@ for(int r=0;r<grid->procs;r++) {
     t0 = MPI_Wtime();
     std::vector<int> rec_to_grid(grid->procs,0);
     hit_to_grid_msg *send_to_grid = hit_sbuf_to_grid.data();
+   double local_pin_hit = 0.0;
+double local_pin_total = 0.0;
+double local_e_real = 0.0;
 for(size_t q=0; q<hit_slab_to_grid.size(); q++) {
     const hit_slab_to_grid_entry &e = hit_slab_to_grid[q];
     const int slot = rec_to_grid[e.dest]++;
@@ -2812,9 +2880,18 @@ for(int r=0;r<grid->procs;r++) {
             int eid = index(i,j,k), ind = G0+eid;
             double old0=u0[eid].vel[0], old1=u0[eid].vel[1], old2=u0[eid].vel[2];
             u0[eid].vel[0]=arr[a].u; u0[eid].vel[1]=arr[a].v; u0[eid].vel[2]=arr[a].w;
-            force_acc[0][ind]=(arr[a].u-old0)/dt;
-            force_acc[1][ind]=(arr[a].v-old1)/dt;
-            force_acc[2][ind]=(arr[a].w-old2)/dt;
+            const double fx=(arr[a].u-old0)/dt;
+            const double fy=(arr[a].v-old1)/dt;
+            const double fz=(arr[a].w-old2)/dt;
+            force_acc[0][ind]=fx;
+            force_acc[1][ind]=fy;
+            force_acc[2][ind]=fz;
+            const double umx = 0.5*(old0 + arr[a].u);
+            const double umy = 0.5*(old1 + arr[a].v);
+            const double umz = 0.5*(old2 + arr[a].w);
+            local_pin_hit += umx*fx + umy*fy + umz*fz;
+            local_pin_total += umx*fx + umy*fy + umz*fz;
+            local_e_real += 0.5*(arr[a].u*arr[a].u + arr[a].v*arr[a].v + arr[a].w*arr[a].w);
         }
     }
     double t_unpack_local = MPI_Wtime() - t0;
@@ -2828,14 +2905,36 @@ for(int r=0;r<grid->procs;r++) {
     hit_t_fft_bwd = tvals_max[4];
     hit_t_comm_s2g = tvals_max[5];
     hit_t_unpack = tvals_max[6];
-    hit_last_e_low = e_low;
-    hit_last_e_tot = e_tot;
+    double pin_hit = 0.0, pin_total = 0.0, e_real = 0.0;
+    MPI_Allreduce(&local_pin_hit, &pin_hit, 1, MPI_DOUBLE, MPI_SUM, world);
+    MPI_Allreduce(&local_pin_total, &pin_total, 1, MPI_DOUBLE, MPI_SUM, world);
+    MPI_Allreduce(&local_e_real, &e_real, 1, MPI_DOUBLE, MPI_SUM, world);
+    hit_last_e_low = diag.e_forced_band;
+    hit_last_e_tot = diag.e_total;
+    hit_last_e_unforced = diag.e_unforced;
+    hit_last_e_total_spec = diag.e_total;
+    hit_last_e_total_real = e_real/double(N);
+    hit_last_pin_hit = pin_hit/double(N);
+    hit_last_pin_total = pin_total/double(N);
+    hit_last_n_forced_modes = diag.n_forced_modes;
+#if defined(DEBUG)
+    const double budget_tol = 1e-10;
+    const double split_err = std::fabs(diag.e_total - (diag.e_forced_band + diag.e_unforced))/std::max(diag.e_total, small_number);
+    if(split_err > budget_tol) p_fatal_error("HIT spectral split mismatch", 1);
+    if(!std::isfinite(hit_last_pin_hit) || !std::isfinite(hit_last_e_total_spec)) p_fatal_error("HIT NaN in diagnostics", 1);
+    if(diag.n_forced_modes <= 0) p_fatal_error("HIT shell has zero forced modes", 1);
+    if(spars->hit_e_low_target <= 0.0) p_fatal_error("HIT target band energy must be >0", 1);
+#endif
     communicate<1>();
 }
 
 void fluid_3d::write_hit_energy_diag() {
     if(!spars->hit_enable) return;
-    // t step dt Etotal Elow Ehigh Elow_bar urms varx vary varz alpha Pin eps Pp Pel Pasv dKdt R
+     // Physical-budget group (all volume averaged):
+    // t step dt Kdens Eband Eunforced Pin_hit_midpoint Pin_total_midpoint eps Pp Pel Pasv dKdt_fd R
+    // Cross-check/control group:
+    // Etotal_spec Etotal_real Elow_bar alpha n_forced_modes urms varx vary varz
+    // Timing group (seconds/step):
     // t_pack t_comm_g2s t_fft_fwd t_shell t_fft_bwd t_comm_s2g t_unpack
     const double volN = double(m*n*o);
     double ux2=0,uy2=0,uz2=0,pin=0,pp=0,ppe_g=0,ppsv=0,epsg=0;
@@ -2862,21 +2961,134 @@ void fluid_3d::write_hit_energy_diag() {
     MPI_Allreduce(&local_eps,&epsg,1,MPI_DOUBLE,MPI_SUM,grid->cart);
     const double varx = ux2/volN, vary=uy2/volN, varz=uz2/volN;
     const double urms = sqrt((varx+vary+varz)/3.0);
-    const double ehigh = std::max(0.0, hit_last_e_tot-hit_last_e_low);
-    const double dKdt_fd = (hit_last_e_tot - hit_prev_e_tot)/std::max(dt,small_number);
-    const double r_energy = dKdt_fd - (pin - epsg + pp);
+     const double e_total_real = 0.5*(varx+vary+varz);
+    const double e_total_spec = (hit_last_e_total_spec>0.0)?hit_last_e_total_spec:hit_last_e_tot;
+    const double e_forced = hit_last_e_low;
+    const double e_unforced = std::max(0.0, (hit_last_e_unforced>0.0)?hit_last_e_unforced:(e_total_spec - e_forced));
+    const double pin_total = (std::fabs(hit_last_pin_total)>0.0)?hit_last_pin_total:(pin/volN);
+    const double pin_hit = (std::fabs(hit_last_pin_hit)>0.0)?hit_last_pin_hit:pin_total;
+    const double dKdt_fd = (e_total_real - hit_prev_e_tot)/std::max(dt,small_number);
+    const double r_energy = dKdt_fd - (pin_total - epsg/volN + pp/volN + ppe_g/volN + ppsv/volN);
     if(rank!=0) {
-        hit_prev_e_tot = hit_last_e_tot;
+         hit_prev_e_tot = e_total_real;
         return;
     }
     FILE *fh = p_safe_fopen((std::string(spars->dirname)+"/hit_energy.dat").c_str(), nt==1?"w":"a");
-    fprintf(fh, "%g %d %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g\n",
-            time, nt, dt, hit_last_e_tot, hit_last_e_low, ehigh, hit_e_low_bar,
-            urms, varx, vary, varz, hit_alpha_last, pin/volN, epsg/volN, pp/volN,
-            ppe_g/volN, ppsv/volN, dKdt_fd, r_energy,
-            hit_t_pack, hit_t_comm_g2s, hit_t_fft_fwd, hit_t_shell, hit_t_fft_bwd, hit_t_comm_s2g, hit_t_unpack);
+      if(nt==1) {
+        fprintf(fh, "# [physical] t step dt Kdens Eband Eunforced Pin_hit_midpoint Pin_total_midpoint eps Pp Pel Pasv dKdt_fd R\n");
+        fprintf(fh, "# [crosscheck] Etotal_spec Etotal_real Elow_bar alpha n_forced_modes urms varx vary varz\n");
+        fprintf(fh, "# [timing:seconds_per_step] t_pack t_comm_g2s t_fft_fwd t_shell t_fft_bwd t_comm_s2g t_unpack\n");
+        fprintf(fh, "# [control_timescale] tau_force_implied beta_effective delta_alpha_effective\n");
+    }
+    const double beta_effective = (hit_last_tau_force>0.0)?(dt/hit_last_tau_force):0.0;
+    fprintf(fh, "%g %d %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %lld %g %g %g %g %g %g %g %g %g %g %g %g %g %g\n",
+            time, nt, dt, e_total_real, e_forced, e_unforced, pin_hit, pin_total, epsg/volN, pp/volN,
+            ppe_g/volN, ppsv/volN, dKdt_fd, r_energy, e_total_spec, e_total_real, hit_e_low_bar,
+            hit_alpha_last, hit_last_n_forced_modes, urms, varx, vary, varz,
+            hit_t_pack, hit_t_comm_g2s, hit_t_fft_fwd, hit_t_shell, hit_t_fft_bwd, hit_t_comm_s2g, hit_t_unpack,
+            hit_last_tau_force, beta_effective, hit_last_delta_alpha_eff);
     fclose(fh);
-    hit_prev_e_tot = hit_last_e_tot;
+    hit_prev_e_tot = e_total_real;
+    write_hit_quality_template_diag(e_total_real, epsg/volN, varx, vary, varz);
+    write_hit_quality_spectrum_diag();
+}
+
+void fluid_3d::write_hit_quality_template_diag(double kdens, double epsdens, double varx, double vary, double varz) {
+    if(!spars->hit_quality_template_enable) return;
+    if(spars->hit_quality_stride>1 && (nt % spars->hit_quality_stride)!=0) return;
+    const double t0 = spars->hit_quality_window_start_time;
+    const double t1 = spars->hit_quality_window_end_time;
+    if(time < t0) return;
+    if(t1 > t0 && time > t1) return;
+
+    double loc_sx2=0, loc_sx3=0, loc_sy2=0, loc_sy3=0, loc_sz2=0, loc_sz3=0;
+    const int sx = 1, sy = sm4, sz = smn4;
+    for(int k=0;k<so;k++) for(int j=0;j<sn;j++) for(int i=0;i<sm;i++) {
+        int eid = index(i,j,k);
+        int ind = G0 + eid;
+        const double dudx = 0.5*dxsp*(u_mem[ind+sx].vel[0]-u_mem[ind-sx].vel[0]);
+        const double dvdy = 0.5*dysp*(u_mem[ind+sy].vel[1]-u_mem[ind-sy].vel[1]);
+        const double dwdz = 0.5*dzsp*(u_mem[ind+sz].vel[2]-u_mem[ind-sz].vel[2]);
+        loc_sx2 += dudx*dudx; loc_sx3 += dudx*dudx*dudx;
+        loc_sy2 += dvdy*dvdy; loc_sy3 += dvdy*dvdy*dvdy;
+        loc_sz2 += dwdz*dwdz; loc_sz3 += dwdz*dwdz*dwdz;
+    }
+    double sx2=0,sx3=0,sy2=0,sy3=0,sz2=0,sz3=0;
+    MPI_Allreduce(&loc_sx2,&sx2,1,MPI_DOUBLE,MPI_SUM,world);
+    MPI_Allreduce(&loc_sx3,&sx3,1,MPI_DOUBLE,MPI_SUM,world);
+    MPI_Allreduce(&loc_sy2,&sy2,1,MPI_DOUBLE,MPI_SUM,world);
+    MPI_Allreduce(&loc_sy3,&sy3,1,MPI_DOUBLE,MPI_SUM,world);
+    MPI_Allreduce(&loc_sz2,&sz2,1,MPI_DOUBLE,MPI_SUM,world);
+    MPI_Allreduce(&loc_sz3,&sz3,1,MPI_DOUBLE,MPI_SUM,world);
+    const double volN = double(m*n*o);
+    sx2 /= volN; sx3 /= volN; sy2 /= volN; sy3 /= volN; sz2 /= volN; sz3 /= volN;
+    const double skewx = (sx2>small_number)?(-sx3/std::pow(sx2,1.5)):0.0;
+    const double skewy = (sy2>small_number)?(-sy3/std::pow(sy2,1.5)):0.0;
+    const double skewz = (sz2>small_number)?(-sz3/std::pow(sz2,1.5)):0.0;
+
+    if(!hit_q_ref_initialized) {
+        hit_q_k_ref = std::max(kdens, small_number);
+        hit_q_eps_ref = std::max(epsdens, small_number);
+        hit_q_ref_initialized = true;
+    }
+    hit_q_n += 1.0;
+    hit_q_sum_k += kdens; hit_q_sum_k2 += kdens*kdens;
+    hit_q_sum_eps += epsdens; hit_q_sum_eps2 += epsdens*epsdens;
+    hit_q_sum_sx += skewx; hit_q_sum_sy += skewy; hit_q_sum_sz += skewz;
+    hit_q_sum_sx2 += skewx*skewx; hit_q_sum_sy2 += skewy*skewy; hit_q_sum_sz2 += skewz*skewz;
+    if(std::fabs(kdens-hit_q_k_ref) <= spars->hit_quality_tol_k*hit_q_k_ref) hit_q_inband_k++;
+    if(std::fabs(epsdens-hit_q_eps_ref) <= spars->hit_quality_tol_eps*hit_q_eps_ref) hit_q_inband_eps++;
+
+    if(rank!=0) return;
+    const double n = std::max(hit_q_n, 1.0);
+    const double k_mean = hit_q_sum_k/n;
+    const double eps_mean = hit_q_sum_eps/n;
+    const double k_std = std::sqrt(std::max(0.0, hit_q_sum_k2/n - k_mean*k_mean));
+    const double eps_std = std::sqrt(std::max(0.0, hit_q_sum_eps2/n - eps_mean*eps_mean));
+    const double cov_k = k_std/std::max(std::fabs(k_mean), small_number);
+    const double cov_eps = eps_std/std::max(std::fabs(eps_mean), small_number);
+    const double sx_mean = hit_q_sum_sx/n, sy_mean = hit_q_sum_sy/n, sz_mean = hit_q_sum_sz/n;
+    const double anis_ratio = std::max({varx,vary,varz})/std::max(std::min({varx,vary,varz}), small_number);
+    const int pass_stationarity = (cov_k < 0.20 && cov_eps < 0.20) ? 1 : 0;
+    const int pass_skew = ((sx_mean>0.2 && sx_mean<1.2) && (sy_mean>0.2 && sy_mean<1.2) && (sz_mean>0.2 && sz_mean<1.2)) ? 1 : 0;
+    const int pass_isotropy = (anis_ratio < 1.2) ? 1 : 0;
+    const int pass_residence = ((hit_q_inband_k/n)>0.5 && (hit_q_inband_eps/n)>0.5) ? 1 : 0;
+
+    FILE *fh = p_safe_fopen((std::string(spars->dirname)+"/hit_quality_summary.dat").c_str(), nt==1?"w":"a");
+    if(nt==1) {
+        fprintf(fh, "# t nwin k_mean k_std k_cov eps_mean eps_std eps_cov skewx_mean skewy_mean skewz_mean anis_ratio k_residence eps_residence pass_stationarity pass_skew pass_isotropy pass_residence\n");
+    }
+    fprintf(fh, "%g %g %g %g %g %g %g %g %g %g %g %g %g %g %d %d %d %d\n",
+            time, n, k_mean, k_std, cov_k, eps_mean, eps_std, cov_eps, sx_mean, sy_mean, sz_mean,
+            anis_ratio, hit_q_inband_k/n, hit_q_inband_eps/n, pass_stationarity, pass_skew, pass_isotropy, pass_residence);
+    fclose(fh);
+}
+
+void fluid_3d::write_hit_quality_spectrum_diag() {
+    if(!spars->hit_quality_template_enable || !spars->hit_quality_write_spectra || !spars->hit_use_fft) return;
+    if(spars->hit_quality_stride>1 && (nt % spars->hit_quality_stride)!=0) return;
+    const int t0 = spars->hit_kf2_max + 2;
+    std::vector<double> loc_shell(t0, 0.0), g_shell(t0, 0.0);
+    const int N = m*n*o;
+    const double invN2 = 1.0/(double(N)*double(N));
+    const ptrdiff_t slab_plane = ptrdiff_t(n)*ptrdiff_t(m);
+    for(ptrdiff_t lz=0; lz<hit_local_n0; lz++) for(int ky=0; ky<n; ky++) for(int kx=0; kx<m; kx++) {
+        ptrdiff_t idx = lz*slab_plane + ptrdiff_t(ky)*m + kx;
+        int kz = int(hit_local_0_start + lz);
+        int nx = (kx<=m/2)?kx:kx-m;
+        int ny = (ky<=n/2)?ky:ky-n;
+        int nz = (kz<=o/2)?kz:kz-o;
+        int kmag = int(std::floor(std::sqrt(double(nx*nx + ny*ny + nz*nz))));
+        if(kmag < 0 || kmag >= t0) continue;
+        double ur=hit_ux[idx][0], ui=hit_ux[idx][1], vr=hit_uy[idx][0], vi=hit_uy[idx][1], wr=hit_uz[idx][0], wi=hit_uz[idx][1];
+        loc_shell[kmag] += 0.5*(ur*ur+ui*ui+vr*vr+vi*vi+wr*wr+wi*wi)*invN2;
+    }
+    MPI_Allreduce(loc_shell.data(), g_shell.data(), t0, MPI_DOUBLE, MPI_SUM, world);
+    if(rank!=0) return;
+    FILE *fh = p_safe_fopen((std::string(spars->dirname)+"/hit_quality_spectrum.dat").c_str(), nt==1?"w":"a");
+    if(nt==1) fprintf(fh, "# t k shellE\n");
+    for(int k=0;k<t0;k++) fprintf(fh, "%g %d %g\n", time, k, g_shell[k]);
+    fclose(fh);
 }
 
 void fluid_3d::update_khm_fields() {

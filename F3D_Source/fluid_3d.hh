@@ -212,6 +212,25 @@ class fluid_3d {
     std::vector<int> hit_sc_to_grid, hit_rc_to_grid, hit_sd_to_grid, hit_rd_to_grid;
     std::vector<hit_to_slab_msg> hit_sbuf_to_slab, hit_rbuf_to_slab;
     std::vector<hit_to_grid_msg> hit_sbuf_to_grid, hit_rbuf_to_grid;
+   struct HitSpectralEnergyDiag {
+        double e_total;
+        double e_forced_band;
+        double e_unforced;
+        double e_shell_raw;
+        long long n_forced_modes;
+    };
+    HitSpectralEnergyDiag compute_hit_spectral_energy_diag(int kf2_min, int kf2_max) const;
+    double hit_last_e_total_spec, hit_last_e_total_real, hit_last_e_unforced;
+    double hit_last_pin_hit, hit_last_pin_total;
+    double hit_last_tau_force, hit_last_delta_alpha_eff;
+    long long hit_last_n_forced_modes;
+    double hit_q_n, hit_q_sum_k, hit_q_sum_k2, hit_q_sum_eps, hit_q_sum_eps2;
+    double hit_q_sum_sx, hit_q_sum_sy, hit_q_sum_sz, hit_q_sum_sx2, hit_q_sum_sy2, hit_q_sum_sz2;
+    double hit_q_k_ref, hit_q_eps_ref;
+    long long hit_q_inband_k, hit_q_inband_eps;
+    bool hit_q_ref_initialized;
+    void write_hit_quality_template_diag(double kdens, double epsdens, double varx, double vary, double varz);
+    void write_hit_quality_spectrum_diag();
 	/** A timer object to keep track of old and new extrapolation routine time usage */
 	timer watch;
 	extrap_helper<3> expper;

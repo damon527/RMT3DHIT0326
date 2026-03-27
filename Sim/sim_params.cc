@@ -37,9 +37,10 @@ sim_params::sim_params(const char *fn):
     hit_bootstrap_steps(0), hit_insert_step(0), hit_recalibrate_target(0),
     hit_target_source(0),
     khm_enable(0), khm_out_stride(100), khm_pairs_per_sample(4096), khm_seed(24680),
-    hit_target_urms(1.0), hit_k0(4.0), hit_beta(0.05), hit_delta_alpha(0.005),
+     hit_quality_template_enable(0), hit_quality_stride(10), hit_quality_write_spectra(0), hit_quality_write_structures(0),
+    hit_target_urms(1.0), hit_k0(4.0), hit_beta(0.05), hit_tau_force(-1.0), hit_delta_alpha(0.005), hit_delta_alpha_rate(-1.0),
     hit_e_floor(1e-12), hit_e_low_target(0.0), hit_ramp_time(0.5), hit_restart_freeze_time(0.1),
-    hit_bootstrap_start_time(0.0), hit_e_low_bar_state(0.0), hit_alpha_last_state(1.0),
+     hit_bootstrap_start_time(0.0), hit_quality_window_start_time(0.0), hit_quality_window_end_time(-1.0), hit_quality_tail_fraction(0.5), hit_quality_tol_k(0.10), hit_quality_tol_eps(0.10), hit_e_low_bar_state(0.0), hit_alpha_last_state(1.0),
     hit_ramp_t0_state(0.0), hit_freeze_steps_state(0),
     bct{{0,0,0,0,0,0},{0,0,0,0,0,0},{0,0,0,0,0,0}},bcv{{0,0,0,0,0,0},{0,0,0,0,0,0},{0,0,0,0,0,0}},
     object_list(NULL),
@@ -254,8 +255,12 @@ sim_params::sim_params(const char *fn):
             hit_k0 = final_double(ln);
         } else if(se(bp, "hit_beta")){
             hit_beta = final_double(ln);
+         } else if(se(bp, "hit_tau_force")){
+            hit_tau_force = final_double(ln);
         } else if(se(bp, "hit_delta_alpha")){
             hit_delta_alpha = final_double(ln);
+        } else if(se(bp, "hit_delta_alpha_rate")){
+            hit_delta_alpha_rate = final_double(ln);    
         } else if(se(bp, "hit_e_floor")){
             hit_e_floor = final_double(ln);
         } else if(se(bp, "hit_e_low_target")){
@@ -282,16 +287,24 @@ sim_params::sim_params(const char *fn):
             khm_pairs_per_sample = final_int(ln);
         } else if(se(bp, "khm_seed")){
             khm_seed = final_int(ln);
-        } else if(se(bp, "bc_xl")){
-            int tmp_type[3]={0,0,0};
-            double tmp_value[3]={0,0,0};
-            for(i=0;i<3;i++) tmp_type[i] = next_int(ln);
-            for(i=0;i<2;i++) tmp_value[i] = next_double(ln);
-            tmp_value[2] = final_double(ln);
-            for(i=0;i<3;i++) {
-                bct[i][0] = tmp_type[i];
-                bcv[i][0] = tmp_value[i];
-            }
+        } else if(se(bp, "hit_quality_template_enable")){
+            hit_quality_template_enable = final_int(ln);
+        } else if(se(bp, "hit_quality_stride")){
+            hit_quality_stride = final_int(ln);
+        } else if(se(bp, "hit_quality_write_spectra")){
+            hit_quality_write_spectra = final_int(ln);
+        } else if(se(bp, "hit_quality_write_structures")){
+            hit_quality_write_structures = final_int(ln);
+        } else if(se(bp, "hit_quality_window_start_time")){
+            hit_quality_window_start_time = final_double(ln);
+        } else if(se(bp, "hit_quality_window_end_time")){
+            hit_quality_window_end_time = final_double(ln);
+        } else if(se(bp, "hit_quality_tail_fraction")){
+            hit_quality_tail_fraction = final_double(ln);
+        } else if(se(bp, "hit_quality_tol_k")){
+            hit_quality_tol_k = final_double(ln);
+        } else if(se(bp, "hit_quality_tol_eps")){
+            hit_quality_tol_eps = final_double(ln);
         } else if(se(bp, "bc_xh")){
             int tmp_type[3]={0,0,0};
             double tmp_value[3]={0,0,0};
@@ -635,7 +648,9 @@ void sim_params::write_params(const char * chk_dirname){
                     "hit_target_urms           %g\n"
                     "hit_k0                    %g\n"
                     "hit_beta                  %g\n"
+                    "hit_tau_force             %g\n"
                     "hit_delta_alpha           %g\n"
+                    "hit_delta_alpha_rate      %g\n"
                     "hit_e_floor               %g\n"
                     "hit_e_low_target          %g\n"
                     "hit_ramp_time             %g\n"
@@ -648,13 +663,24 @@ void sim_params::write_params(const char * chk_dirname){
                     "khm_enable                %d\n"
                     "khm_out_stride            %d\n"
                     "khm_pairs_per_sample      %d\n"
-                    "khm_seed                  %d\n",
+                    "khm_seed                  %d\n"
+                    "hit_quality_template_enable %d\n"
+                    "hit_quality_stride          %d\n"
+                    "hit_quality_write_spectra   %d\n"
+                    "hit_quality_write_structures %d\n"
+                    "hit_quality_window_start_time %g\n"
+                    "hit_quality_window_end_time   %g\n"
+                    "hit_quality_tail_fraction     %g\n"
+                    "hit_quality_tol_k             %g\n"
+                    "hit_quality_tol_eps           %g\n",
                     hit_enable, hit_phase, hit_use_fft, hit_kf2_max, hit_kf2_min, hit_init_seed, hit_init_only,
                     hit_bootstrap_steps, hit_insert_step, hit_recalibrate_target, hit_target_source,
-                    hit_target_urms, hit_k0, hit_beta, hit_delta_alpha, hit_e_floor, hit_e_low_target,
+                    hit_target_urms, hit_k0, hit_beta, hit_tau_force, hit_delta_alpha, hit_delta_alpha_rate, hit_e_floor, hit_e_low_target,
                     hit_ramp_time, hit_restart_freeze_time, hit_bootstrap_start_time,
                     hit_e_low_bar_state, hit_alpha_last_state, hit_ramp_t0_state, hit_freeze_steps_state,
-                    khm_enable, khm_out_stride, khm_pairs_per_sample, khm_seed);
+                    khm_enable, khm_out_stride, khm_pairs_per_sample, khm_seed,
+                    hit_quality_template_enable, hit_quality_stride, hit_quality_write_spectra, hit_quality_write_structures,
+                    hit_quality_window_start_time, hit_quality_window_end_time, hit_quality_tail_fraction, hit_quality_tol_k, hit_quality_tol_eps);
                     fprintf(fh, "# SOLIDS CONFIGURATIONS\n");
                     if(object_list!=NULL){
                         for(int i=0;i<n_obj;i++){
