@@ -50,7 +50,7 @@ class sim_params{
 	// 512 reference map xi_x (9)
 	// 1024 reference map xi_y (10)
 	// 2048 reference map xi_z (11)
-	unsigned long long out_flag;
+	int out_flag;
 	// output dimension, 0-x, 1-y, 2-z
 	int output_dim;
 	// the index of the output slice
@@ -99,53 +99,6 @@ class sim_params{
 	double ex_visc_mult, ev_trans_mult, sdt_pad, dt_ex_pad;
     double weight_fac;
 	double gravity;
-	// HIT controls
-    int hit_enable;
-    int hit_phase;
-    int hit_kf2_max;
-    int hit_kf2_min;
-    int hit_use_fft;
-     int hit_init_mode;      // 0 deterministic_lowmode, 1 random_phase_spectrum, 2 full_spectrum_random_phase
-    int hit_forcing_mode;   // 0 shell_scalar, 1 OU_random, 2 random_divfree
-    int hit_control_mode;   // 0 shell_energy_feedback, 1 constant_power
-    int hit_forcing_insertion; // 0 end_step, 1 split_half, 2 rhs_source
-    int hit_init_seed;
-    int hit_init_only;
-    int hit_bootstrap_steps;
-    int hit_insert_step;
-    int hit_recalibrate_target;
-    int hit_target_source;
-    int khm_enable;
-    int khm_out_stride;
-    int khm_pairs_per_sample;
-    int khm_seed;
-     int hit_quality_template_enable;
-    int hit_quality_stride;
-    int hit_quality_write_spectra;
-    int hit_quality_write_structures;
-    double hit_target_urms;
-    double hit_k0;
-     double hit_init_k2_min;
-    double hit_init_k2_max;
-    double hit_force_power;
-    double hit_beta;
-    double hit_tau_force;
-    double hit_delta_alpha;
-    double hit_delta_alpha_rate;
-    double hit_e_floor;
-    double hit_e_low_target;
-    double hit_ramp_time;
-    double hit_restart_freeze_time;
-    double hit_bootstrap_start_time;
-    double hit_quality_window_start_time;
-    double hit_quality_window_end_time;
-    double hit_quality_tail_fraction;
-    double hit_quality_tol_k;
-    double hit_quality_tol_eps;
-    double hit_e_low_bar_state;
-    double hit_alpha_last_state;
-    double hit_ramp_t0_state;
-    int hit_freeze_steps_state;
 	/** boundary condition types */
     int bct[3][6];
     double bcv[3][6];

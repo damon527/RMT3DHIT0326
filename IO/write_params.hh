@@ -26,26 +26,6 @@
 // 19: Divergence of u edge
 // 20: Density -> only output nonzero values when variable density
 // 21: ||J-1|| -> only output sensible values when debug macro is on
-// 22: HIT forcing acceleration fx
-// 23: HIT forcing acceleration fy
-// 24: HIT forcing acceleration fz
-// 25: Pressure-gradient acceleration gpx
-// 26: Pressure-gradient acceleration gpy
-// 27: Pressure-gradient acceleration gpz
-// 28: Particle-coupling acceleration apx
-// 29: Particle-coupling acceleration apy
-// 30: Particle-coupling acceleration apz
-// 31: Elastic acceleration aex
-// 32: Elastic acceleration aey
-// 33: Elastic acceleration aez
-// 34: Additional-viscous acceleration asvx
-// 35: Additional-viscous acceleration asvy
-// 36: Additional-viscous acceleration asvz
-// 37: ppf
-// 38: ppfe
-// 39: ppe (alias of ppfe)
-// 40: ppfsv
-// 41: eps_nu
 
 /** An object that holds the paramters for writing out slices */
 class write_params{
@@ -61,7 +41,7 @@ class write_params{
 	int obj_id;
 	// the output format (0: matrix, 1: text, 2: gnuplot)
 	int format;
-	static const int numf=42;
+	static const int numf=22;
 	// the filename to write out
 	const char* filename;
 	static const char* default_names[numf];

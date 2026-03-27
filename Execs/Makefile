@@ -20,7 +20,7 @@ iflags = $(foreach subdir,$(source_dirs), -I./$(subdir))
 # Add a few flags for GNU Scientific Library
 iflags+=-I$(PGMG_DIR) `gsl-config --cflags`
 # Add these directory to library path
-base_lflags=-L. -L$(PGMG_DIR) -lpgmg `gsl-config --libs`
+lflags+=-L. -L$(PGMG_DIR) -lpgmg `gsl-config --libs`
 # add C++-11 std to clfags
 
 ########################################
@@ -87,15 +87,15 @@ librmt3d.a: $(objs)
 	ar rs librmt3d.a $^
 
 run_sim$(execsuffix): run_sim.cc librmt3d.a $(headers)
-	$(mpicxx) $(cflags) $(iflags) -o $@ $^ $(base_lflags) $(extra_lflags) $(lp_lflags)
+	$(mpicxx) $(cflags) $(iflags) -o $@ $^ $(lflags) -lrmt3d $(lp_lflags)
 
 ctr_stats: ctr_stats.cc librmt3d.a
-	$(cxx) $(cflags) $(iflags) -o $@ $^ $(base_lflags) $(extra_lflags) $(lp_lflags) -g -O0
+	$(cxx) $(cflags) $(iflags) -o $@ $^ $(lflags) -lrmt3d $(lp_lflags) -g -O0
 
 unpack: unpack.cc librmt3d.a
-	$(cxx) $(cflags) $(iflags) -o $@ $^ $(base_lflags) $(extra_lflags) $(lp_lflags)
+	$(cxx) $(cflags) $(iflags) -o $@ $^ $(lflags) -lrmt3d $(lp_lflags)
 
 tr_unpack: tr_unpack.cc
-	$(cxx) $(cflags) $(iflags) -o $@ $^ $(base_lflags) $(extra_lflags) $(lp_lflags)
+	$(cxx) $(cflags) $(iflags) -o $@ $^ $(lflags) $(lp_lflags)
 
 .PHONY: clean all executables depend realclean

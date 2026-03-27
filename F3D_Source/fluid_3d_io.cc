@@ -339,26 +339,6 @@ int fluid_3d::copy_slice_to_buf(write_params wp,int point) {
 #else
             *b = 100.;
 #endif
-} else if (wp.o_type >= 22 && wp.o_type <= 24) {
-            *b = force_acc[wp.o_type-22][eid+G0];
-        } else if (wp.o_type >= 25 && wp.o_type <= 27) {
-            *b = gradp_acc[wp.o_type-25][eid+G0];
-        } else if (wp.o_type >= 28 && wp.o_type <= 30) {
-            *b = part_acc[wp.o_type-28][eid+G0];
-        } else if (wp.o_type >= 31 && wp.o_type <= 33) {
-            *b = elas_acc[wp.o_type-31][eid+G0];
-        } else if (wp.o_type >= 34 && wp.o_type <= 36) {
-            *b = asv_acc[wp.o_type-34][eid+G0];
-        } else if (wp.o_type == 37) {
-            *b = ppf[eid+G0];
-        } else if (wp.o_type == 38) {
-            *b = ppfe[eid+G0];
-        } else if (wp.o_type == 39) {
-            *b = ppe[eid+G0];
-        } else if (wp.o_type == 40) {
-            *b = ppfsv[eid+G0];
-        } else if (wp.o_type == 41) {
-            *b = eps_nu[eid+G0];
         } else {
 			if(wp.obj_id==-1) {
 				obj_id=min_phi_id(eid);

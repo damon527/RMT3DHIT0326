@@ -4,9 +4,7 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
-#include <random>
 #include <unistd.h>
-#include <fftw3-mpi.h>
 #ifdef _OPENMP
 #include "omp.h"
 #endif
@@ -185,54 +183,6 @@ class fluid_3d {
 	double *lx0, *ly0, *lz0;
 	/** output string for sharing status with user */
 	char *out;
-	/** diagnostic/output acceleration fields (cell centered) */
-    double *force_acc[3], *gradp_acc[3], *part_acc[3], *elas_acc[3], *asv_acc[3];
-    double *ppf, *ppfe, *ppe, *ppfsv, *eps_nu;
-    // HIT controller state
-    double hit_e_low_bar, hit_alpha_last, hit_ramp_t0;
-    int hit_phase_state, hit_freeze_steps;
-    double hit_bootstrap_sum, hit_bootstrap_count, hit_last_e_low, hit_last_e_tot, hit_prev_e_tot;
-    double hit_t_pack, hit_t_comm_g2s, hit_t_fft_fwd, hit_t_shell, hit_t_fft_bwd, hit_t_comm_s2g, hit_t_unpack;
-    int hit_step;
-    std::mt19937 hit_rng;
-    bool hit_fftw_mpi_ready;
-    ptrdiff_t hit_alloc_local, hit_local_n0, hit_local_0_start;
-    fftw_complex *hit_ux, *hit_uy, *hit_uz;
-    fftw_complex *hit_fx_ou, *hit_fy_ou, *hit_fz_ou;
-    bool hit_ou_initialized;
-    fftw_plan hit_px_f, hit_py_f, hit_pz_f, hit_px_b, hit_py_b, hit_pz_b;
-    std::vector<int> hit_slab_n0, hit_slab_start;
-    std::vector<int> hit_rank_bounds;
-    struct hit_to_slab_msg { ptrdiff_t idx; double u, v, w; };
-    struct hit_to_grid_msg { int gx, gy, gz; double u, v, w; };
-    struct hit_local_to_slab_entry { int dest; ptrdiff_t slab_idx; int eid; };
-    struct hit_slab_to_grid_entry { int dest; ptrdiff_t slab_idx; int gx, gy, gz; };
-    std::vector<int> hit_z_to_slab_rank;
-    std::vector<hit_local_to_slab_entry> hit_local_to_slab;
-    std::vector<hit_slab_to_grid_entry> hit_slab_to_grid;
-    std::vector<int> hit_rec_to_slab, hit_rec_to_grid;
-    std::vector<int> hit_sc_to_grid, hit_rc_to_grid, hit_sd_to_grid, hit_rd_to_grid;
-    std::vector<hit_to_slab_msg> hit_sbuf_to_slab, hit_rbuf_to_slab;
-    std::vector<hit_to_grid_msg> hit_sbuf_to_grid, hit_rbuf_to_grid;
-   struct HitSpectralEnergyDiag {
-        double e_total;
-        double e_forced_band;
-        double e_unforced;
-        double e_shell_raw;
-        long long n_forced_modes;
-    };
-    HitSpectralEnergyDiag compute_hit_spectral_energy_diag(int kf2_min, int kf2_max) const;
-    double hit_last_e_total_spec, hit_last_e_total_real, hit_last_e_unforced;
-    double hit_last_pin_hit, hit_last_pin_total;
-    double hit_last_tau_force, hit_last_delta_alpha_eff;
-    long long hit_last_n_forced_modes;
-    double hit_q_n, hit_q_sum_k, hit_q_sum_k2, hit_q_sum_eps, hit_q_sum_eps2;
-    double hit_q_sum_sx, hit_q_sum_sy, hit_q_sum_sz, hit_q_sum_sx2, hit_q_sum_sy2, hit_q_sum_sz2;
-    double hit_q_k_ref, hit_q_eps_ref;
-    long long hit_q_inband_k, hit_q_inband_eps;
-    bool hit_q_ref_initialized;
-    void write_hit_quality_template_diag(double kdens, double epsdens, double varx, double vary, double varz);
-    void write_hit_quality_spectrum_diag();
 	/** A timer object to keep track of old and new extrapolation routine time usage */
 	timer watch;
 	extrap_helper<3> expper;
@@ -371,8 +321,7 @@ class fluid_3d {
 	template<lower_faces F>
 	int collision_stress(int eid, double (&fluid_s)[3]);
 	template<lower_faces F>
-	void solid_stress(int eid, double (&solid_s)[3], double & sfrac,
-                      double *elastic_s=NULL, double *asv_s=NULL, double *active_s=NULL);
+	void solid_stress(int eid, double (&solid_s)[3], double & sfrac);
 	template<lower_faces F>
 	void fluid_stress(int eid, double (&fluid_s)[3]);
 	void velocity_grad(lower_faces F,int eid,matrix &grad_v);
@@ -489,19 +438,7 @@ class fluid_3d {
     double avg_detF();
     void compute_centroid(double &centx, double &centy, double &centz, double &vol);
     void compute_v_centroid();
-  // HIT + diagnostics
-    void initialize_hit_field();
-    void initialize_hit_field_deterministic();
-    void initialize_hit_field_random_phase();
-    void initialize_hit_field_full_spectrum_random_phase();
-    void apply_hit_forcing(double forcing_frac=1.0);
-    void apply_hit_forcing_legacy_trig();
-     void apply_hit_forcing_spectral_shell(double forcing_frac=1.0);
-    void setup_hit_fftw_mpi();
-    void cleanup_hit_fftw_mpi();
-    void update_khm_fields();
-    void write_hit_energy_diag();
-    
+
 #if defined(DEBUG)
     double_int max_Gaussian_curvature(int &sign);
     double_int max_solid_stress(int type);
