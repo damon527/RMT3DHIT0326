@@ -186,7 +186,7 @@ class sim_manager {
     avg_y(n_obj==0?NULL:new double[n_obj]),
     avg_z(n_obj==0?NULL:new double[n_obj]),
     avg_N(n_obj==0?NULL:new double[n_obj]),
-    base_srho(n_obj==0?NULL:new double[n_obj]),
+     base_srho(n_obj==0?NULL:new double[n_obj]),
     base_shear_mod(n_obj==0?NULL:new double[n_obj]),
     insertion_eta((spars->hit_insert_step>=0)?0.0:1.0),
     particles_inserted(spars->hit_insert_step<0),

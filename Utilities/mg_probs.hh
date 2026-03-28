@@ -453,6 +453,21 @@ public:
 	}
 
 	double run(multigrid *mg, bool profile, int c=0);
+	
+	protected:
+    inline void set_solver_tolerances(double stencil_scale) {
+        const double eps = std::numeric_limits<double>::epsilon();
+
+        // Machine-epsilon-only tolerances are often too strict when LU on the
+        // coarsest grid fails and MG falls back to Gauss-Seidel smoothing.
+        // Use epsilon-scaled values with practical lower bounds.
+        const double eps_l2_tol = stencil_scale * stencil_scale * eps * eps * 1e4;
+        const double eps_linf_tol = stencil_scale * eps * 1e2;
+
+        tol = (eps_l2_tol > 1e-22) ? eps_l2_tol : 1e-22;
+        max_norm_tol = (eps_linf_tol > 1e-11) ? eps_linf_tol : 1e-11;
+        log_tol = log10(tol);
+    }
 };
 
 class simp_fem: public mg_prob {
@@ -480,11 +495,7 @@ class simp_fem: public mg_prob {
                 st.set_partials(false);
 
             // tol scales with central node (32)
-            double eps = std::numeric_limits<double>::epsilon();
-            tol = 32*32*eps*eps*1e4;
-            max_norm_tol = 32*eps*1e2;
-            //max_norm_tol = 1e-8;
-            log_tol = log10(tol);
+           set_solver_tolerances(32.0);
 
             // id strings
             *id = "proj";
@@ -513,11 +524,7 @@ class simp_mac: public mg_prob {
             st.main[13] = -6;
 
             // tol scales with central node (6)
-            double eps = std::numeric_limits<double>::epsilon();
-            tol =6*6*eps*eps*1e4;
-            max_norm_tol = 6*eps*1e2;
-            //max_norm_tol = 1e-8;
-            log_tol = log10(tol);
+            set_solver_tolerances(6.0);
 
             *id = "mac";
             if (!(gm->x_prd && gm->y_prd && gm->z_prd)){
@@ -551,11 +558,7 @@ class simp_visc: public mg_prob {
             st.main[13] = 1 + 2*(lx+ly+lz);
 
             // tol scales with central node (1)
-            double eps = std::numeric_limits<double>::epsilon();
-            tol = eps*eps*1e4;
-            max_norm_tol = eps*1e2;
-            //max_norm_tol = 1e-8;
-            log_tol = log10(tol);
+            set_solver_tolerances(1.0);
 
             *id = "u_visc";
             id[1] = "v_visc";
@@ -639,11 +642,7 @@ class var_den_fem: public var_den_mg_prob{
                 st.set_partials(false);
 
             // tol scales with central node (32)
-            double eps = std::numeric_limits<double>::epsilon();
-            tol = 32*32*eps*eps*1e4;
-            max_norm_tol = 32*eps*1e2;
-            //max_norm_tol = 1e-8;
-            log_tol = log10(tol);
+            set_solver_tolerances(32.0);
 
             // id strings
             *id = "proj";
@@ -674,11 +673,7 @@ class var_den_mac: public var_den_mg_prob{
             st.main[13] = -6;
 
             // tol scales with central node (6)
-            double eps = std::numeric_limits<double>::epsilon();
-            tol =6*6*eps*eps*1e4;
-            max_norm_tol = 6*eps*1e2;
-            //max_norm_tol = 1e-8;
-            log_tol = log10(tol);
+            set_solver_tolerances(6.0);
 
             *id = "mac";
             if (!(gm->x_prd && gm->y_prd && gm->z_prd)){

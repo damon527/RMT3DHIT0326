@@ -219,7 +219,7 @@ int fluid_3d::initialize() {
     if((spars->dump_code & 1) && spars->ntracers>0){
         alloc_tracers();
     }
-     setup_hit_module();
+      setup_hit_module();
     if(spars->hit_enable){
         if(spars->hit_init_type==1) hit_initialize_from_restart();
         else hit_initialize_random_phase();
@@ -278,40 +278,53 @@ void fluid_3d::post_step_operations(int step){
 
 void fluid_3d::init_iter(int init_err){
 
+// HIT initialization already sets a synthetic turbulent field.
+    // The legacy init-iteration loop resets velocities via init_fluid(),
+    // which is incompatible with HIT random-phase/restart initialization.
+    if(spars->hit_enable){
+        if(rank==0) printf("# HIT enabled: skip legacy pressure warm-start iterations (num_iters ignored).\n");
+        compute_stress(0);
+        return;
+    }
+    
     // We do some iteration to get a good estimate of pressure
     if(init_err>0) {
-        double tol = 1e-4;
-        int num_iter = spars->num_iters;
-        if(rank==0) printf("# Doing %d initial iterations, or until div(u) < %e\n", num_iter, tol);
-		/*
-	puts("i\n");
-	for (tracer t:tr->tr) {
-		if (t.p_crd[0] > 200) {
-			printf("here (i)!\n");
-			MPI_Abort(MPI_COMM_WORLD,0);
-		}
-	}
-		*/
-        double divu_l2;
-        for (int i=0;i<num_iter;i++) {
-            time=0;
-            // We need this fill boundary because recalling all the initializing function clears very thing
-            fill_boundary_cc(0);
-            step_forward(spars->debug_flag);
+        if (spars->hit_enable) {
+            if(rank==0) puts("# HIT enabled: skipping legacy init_iter loop.");
+        } else {
+            double tol = 1e-4;
+            int num_iter = spars->num_iters;
+            if(rank==0) printf("# Doing %d initial iterations, or until div(u) < %e\n", num_iter, tol);
+    		/*
+    	puts("i\n");
+    	for (tracer t:tr->tr) {
+    		if (t.p_crd[0] > 200) {
+    			printf("here (i)!\n");
+    			MPI_Abort(MPI_COMM_WORLD,0);
+    		}
+    	}
+    		*/
+            double divu_l2;
+            for (int i=0;i<num_iter;i++) {
+                time=0;
+                // We need this fill boundary because recalling all the initializing function clears very thing
+                fill_boundary_cc(0);
+                step_forward(spars->debug_flag);
 
-            double_int di1, di2;
-            divu_l2 = div_u(di1,di2);
-            if(rank==0) printf("#-->%d %g\n", i, divu_l2);
+                double_int di1, di2;
+                divu_l2 = div_u(di1,di2);
+                if(rank==0) printf("#-->%d %g\n", i, divu_l2);
 
-            // After one iteration, we only keep pressure, but reset everything else
-            init_fluid();
-            init_refmap();
-            extraps.reset();
-            init_extrapolate(false);
+                // After one iteration, we only keep pressure, but reset everything else
+                init_fluid();
+                init_refmap();
+                extraps.reset();
+                init_extrapolate(false);
 #if defined (VAR_DEN)
-            update_rho();
+             update_rho();
 #endif
             if(divu_l2<tol) break;
+            }
         }
         nt=0;
 	time=0.0;

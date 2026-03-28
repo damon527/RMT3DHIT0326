@@ -68,7 +68,7 @@ class sim_params{
 	int ntracers;
     // number of initial iterations
     int num_iters;
-     // HIT module controls
+        // HIT module controls
     bool hit_enable;
     bool hit_keep_forcing_after_insert;
     bool hit_project_modified_modes;
@@ -77,6 +77,7 @@ class sim_params{
     bool hit_write_energy;
     int hit_init_type; // 0: random phase, 1: restart
     int hit_apply_stride;
+    int hit_cfl_recheck_stride;
     int hit_diag_stride;
     int hit_spectrum_stride;
     int hit_seed;
@@ -147,7 +148,7 @@ class sim_params{
 	~sim_params(){
 		if (chk_dirname!=NULL) delete [] chk_dirname;
 		if (recover_dirname!=NULL) delete [] recover_dirname;
-		if (hit_restart_file!=NULL) delete [] hit_restart_file;
+		 if (hit_restart_file!=NULL) delete [] hit_restart_file;
 		if (sim_type!=NULL) delete [] sim_type;
 		if (extra_specs!=NULL) delete [] extra_specs;
 		if (basic_specs!=NULL) delete [] basic_specs;

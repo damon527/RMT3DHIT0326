@@ -21,7 +21,7 @@ sim_params::sim_params(const char *fn):
      hit_enable(false), hit_keep_forcing_after_insert(true),
     hit_project_modified_modes(true), hit_project_all_modes(false),
     hit_write_spectrum(true), hit_write_energy(true),
-    hit_init_type(0), hit_apply_stride(1), hit_diag_stride(10),
+    hit_init_type(0), hit_apply_stride(1), hit_cfl_recheck_stride(1), hit_diag_stride(10),
     hit_spectrum_stride(100), hit_seed(12345), hit_warmup_steps(0),
     hit_insert_step(-1), hit_insert_ramp_steps(0),
     dt(1.), T(1.), cur_time(0),
@@ -160,7 +160,7 @@ sim_params::sim_params(const char *fn):
             ntracers = final_int(ln);
         } else if(se(bp, "num_iters")){
             num_iters = final_int(ln);
-        } else if(se(bp, "hit_enable")){
+         } else if(se(bp, "hit_enable")){
             hit_enable = final_int(ln);
         } else if(se(bp, "hit_init_type")){
             const char *tok = next_token(ln);
@@ -176,6 +176,8 @@ sim_params::sim_params(const char *fn):
             hit_target_re_lambda = final_double(ln);
         } else if(se(bp, "hit_apply_stride")){
             hit_apply_stride = final_int(ln);
+        } else if(se(bp, "hit_cfl_recheck_stride")){
+            hit_cfl_recheck_stride = final_int(ln);
         } else if(se(bp, "hit_diag_stride")){
             hit_diag_stride = final_int(ln);
         } else if(se(bp, "hit_spectrum_stride")){
@@ -457,7 +459,7 @@ sim_params::sim_params(const char *fn):
     }
     if(var_den && rank==0) printf("sim_params:: warning, solid density is different from fluid density, but multigrid solves do not use variable density formulation.\n");
 #endif
- if(hit_enable){
+    if(hit_enable){
         if(sys_size[2] <= 1){
             fatal_error("sim_params: HIT requires 3D grid with nz > 1\n", 1);
         }
@@ -465,6 +467,7 @@ sim_params::sim_params(const char *fn):
             fatal_error("sim_params: HIT requires triply periodic boundaries (x_prd=y_prd=z_prd=1)\n", 1);
         }
         if(hit_apply_stride <= 0) hit_apply_stride = 1;
+        if(hit_cfl_recheck_stride <= 0) hit_cfl_recheck_stride = 1;
         if(hit_diag_stride <= 0) hit_diag_stride = hit_apply_stride;
         if(hit_spectrum_stride <= 0) hit_spectrum_stride = hit_diag_stride;
         if(hit_insert_step >= 0 && hit_warmup_steps > 0 && hit_insert_step <= hit_warmup_steps){
@@ -540,12 +543,13 @@ void sim_params::print_params(){
            "            output_ind                (48)                     int\n"
            "            dump_code                 (3)                      unsigned int\n"
            "            ntracers                  (1000)                   int\n"
-            "            hit_enable                0/1(0)                   bool\n"
+             "            hit_enable                0/1(0)                   bool\n"
            "            hit_init_type             random_phase/restart     string\n"
            "            hit_kf2                   (3.0)                    double\n"
            "            hit_kd                    (50.0)                   double\n"
            "            hit_target_re_lambda      (84.0)                   double\n"
            "            hit_apply_stride          (1)                      int\n"
+           "            hit_cfl_recheck_stride    (1)                      int\n"
            "            hit_diag_stride           (10)                     int\n"
            "            hit_spectrum_stride       (100)                    int\n"
            "            hit_seed                  (12345)                  int\n"
@@ -613,12 +617,13 @@ void sim_params::write_params(const char * chk_dirname){
                     "dump_code                 %u#(3)                   unsigned int\n"
                     "ntracers                  %d#(1000)                int\n"
                     "num_iters                 %d#(5)                   int\n"
-                    "hit_enable                %d#(0)                   bool\n"
+                     "hit_enable                %d#(0)                   bool\n"
                     "hit_init_type             %d#(0=random,1=restart)  int\n"
                     "hit_kf2                   %g#(3.0)                 double\n"
                     "hit_kd                    %g#(50.0)                double\n"
                     "hit_target_re_lambda      %g#(84.0)                double\n"
                     "hit_apply_stride          %d#(1)                   int\n"
+                    "hit_cfl_recheck_stride    %d#(1)                   int\n"
                     "hit_diag_stride           %d#(10)                  int\n"
                     "hit_spectrum_stride       %d#(100)                 int\n"
                     "hit_seed                  %d#(12345)               int\n"
@@ -656,8 +661,8 @@ void sim_params::write_params(const char * chk_dirname){
                     chkpt_freq, omp_num_thr, debug_flag, debug_obj_id,
                     obj_body, data_fmt, out_flag, output_dim,
                     output_ind, dump_code, ntracers, num_iters,
-                    hit_enable, hit_init_type, hit_kf2, hit_kd, hit_target_re_lambda,
-                    hit_apply_stride, hit_diag_stride, hit_spectrum_stride, hit_seed,
+                     hit_enable, hit_init_type, hit_kf2, hit_kd, hit_target_re_lambda,
+                    hit_apply_stride, hit_cfl_recheck_stride, hit_diag_stride, hit_spectrum_stride, hit_seed,
                     hit_warmup_steps, hit_insert_step, hit_insert_ramp_steps,
                     hit_keep_forcing_after_insert, hit_restart_file,
                     hit_project_modified_modes, hit_project_all_modes,

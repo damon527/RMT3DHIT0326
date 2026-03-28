@@ -69,7 +69,7 @@ void fluid_3d::write_chk_pt(const int snum, const int fnum, const char* chk_dirn
 	spars->set_current_chk_step(snum);
 	spars->set_current_time(time);
 	
-	if(spars->hit_enable && hit!=NULL && rank==0){
+	 if(spars->hit_enable && hit!=NULL && rank==0){
         char hit_state[512];
         sprintf(hit_state, "%s/hit_state.bin", chk_dirname);
         FILE *hf = p_safe_fopen(hit_state, "wb");
@@ -152,7 +152,7 @@ int fluid_3d::initialize_from_chk_point(const char * chk_dirname){
 		delete [] filename;
 	}
 
-   if(spars->hit_enable && hit!=NULL){
+  if(spars->hit_enable && hit!=NULL){
         char hit_state[512];
         sprintf(hit_state, "%s/hit_state.bin", chk_dirname);
         FILE *hf = fopen(hit_state, "rb");

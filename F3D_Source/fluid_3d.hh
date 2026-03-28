@@ -273,7 +273,7 @@ class fluid_3d {
 	int initialize();
 	void init_iter(int init_err);
     int initialize_from_chk_point(const char * chk_dirname);
-    void setup_hit_module();
+     void setup_hit_module();
     void hit_initialize_random_phase();
     void hit_initialize_from_restart();
     void apply_hit_forcing_spectral_shell(int step);
